@@ -1,0 +1,10 @@
+{
+  "name": "com.aurorakai.sps-tools",
+  "displayName": "SPS Tools",
+  "version": "1.0.0",
+  "unity": "2022.3",
+  "description": "SPS tooling for avatar creators.",
+  "author": { "name": "Kai" },
+  "url": "https://github.com/aurorakai/sps-tools",
+  "licensesUrl": "https://github.com/aurorakai/sps-tools/blob/main/Packages/com.aurorakai.sps-tools/LICENSE.md"
+}
