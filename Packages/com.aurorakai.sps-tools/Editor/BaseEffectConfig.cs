@@ -53,7 +53,9 @@ namespace AuroraKai.SPSTools
 
     public abstract class BaseEffectConfig : ScriptableObject
     {
-        public GameObject avatarRoot;
+        // Hidden in Inspector because scene references can't be serialized in assets.
+        // The editor window reconnects via avatarRootName at runtime.
+        [HideInInspector] public GameObject avatarRoot;
         public string avatarRootName = "";     // for re-finding avatar after reload
         public string depthParameter = "SPS_Depth";
         public int selectedSocketIndex = -1;

@@ -196,6 +196,7 @@ namespace AuroraKai.SPSTools
                     || blendshapeIndex >= mesh.blendShapeCount
                     || mesh.GetBlendShapeName(blendshapeIndex) != rb.blendshapeName)
                 {
+                    int oldIndex = blendshapeIndex;
                     blendshapeIndex = mesh.GetBlendShapeIndex(rb.blendshapeName);
                     if (blendshapeIndex < 0)
                     {
@@ -211,6 +212,16 @@ namespace AuroraKai.SPSTools
                                 "during preview. Regenerate the blendshape if this is unexpected.");
                         }
                         continue;
+                    }
+
+                    // If the blendshape moved to a different index (e.g. mesh was
+                    // swapped), reset the old slot to avoid a stale weight.
+                    if (oldIndex != blendshapeIndex
+                        && oldIndex >= 0 && oldIndex < mesh.blendShapeCount)
+                    {
+                        var oldBref = new BlendshapeRef { renderer = rb.renderer, index = oldIndex };
+                        s_originalWeights.TryGetValue(oldBref, out float restoreValue);
+                        rb.renderer.SetBlendShapeWeight(oldIndex, restoreValue);
                     }
 
                     rb.blendshapeIndex = blendshapeIndex;
