@@ -50,6 +50,42 @@ namespace AuroraKai.SPSTools.Tests
             return mesh;
         }
 
+        // Body layer (y=0) and overlay/"fluff" layer (y=0.02) bundled into one
+        // SkinnedMesh with no shared triangles and no shared vertex positions —
+        // a disconnected-island topology. Mirrors avatars where fluff is
+        // imported as a separate Blender object and Unity merges them into one
+        // renderer at export. The surface-distance flood fill in
+        // BlendshapeGenerator cannot cross the gap between islands.
+        private static Mesh CreateLayeredIslandMesh()
+        {
+            var mesh = new Mesh();
+            mesh.vertices = new Vector3[]
+            {
+                // Body layer at y=0 (4 cm × 4 cm)
+                new Vector3(-0.02f, 0f, -0.02f),
+                new Vector3( 0.02f, 0f, -0.02f),
+                new Vector3( 0.02f, 0f,  0.02f),
+                new Vector3(-0.02f, 0f,  0.02f),
+                // Fluff layer 2 cm above, same XZ span — distinct vert indices.
+                new Vector3(-0.02f, 0.02f, -0.02f),
+                new Vector3( 0.02f, 0.02f, -0.02f),
+                new Vector3( 0.02f, 0.02f,  0.02f),
+                new Vector3(-0.02f, 0.02f,  0.02f),
+            };
+            mesh.normals = new Vector3[]
+            {
+                Vector3.down, Vector3.down, Vector3.down, Vector3.down,
+                Vector3.up, Vector3.up, Vector3.up, Vector3.up,
+            };
+            mesh.triangles = new int[]
+            {
+                0, 1, 2,  0, 2, 3,  // body quad
+                4, 5, 6,  4, 6, 7,  // fluff quad - no vertex shared with body
+            };
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
         private static Mesh CreateBlendshapeMesh(params string[] blendshapeNames)
         {
             var mesh = CreateOffsetTriangleMesh(0f);
@@ -115,6 +151,65 @@ namespace AuroraKai.SPSTools.Tests
                 Object.DestroyImmediate(root);
                 Object.DestroyImmediate(primaryMesh);
                 Object.DestroyImmediate(overlayMesh);
+            }
+        }
+
+        [Test]
+        public void ComputeVerticesInTube_IncludesBody_WhenOverlayIsTopologyIsland()
+        {
+            // Regression: when a renderer's mesh contains both body geometry and
+            // an overlay layer (fluff, fur, etc.) as disconnected triangle
+            // islands — no shared triangles, no co-located verts — the path's
+            // Euclidean-nearest seed set lands entirely on one layer and the
+            // surface-distance flood fill can't cross to the other. Users
+            // reported the whole deformation landing on the overlay while the
+            // body underneath went untouched. Body verts physically inside the
+            // tube must still be reported in-tube so they receive displacement.
+            var root = new GameObject("Avatar");
+            var mesh = CreateLayeredIslandMesh();
+            CreateRenderer(root.transform, "Body", mesh, out var renderer);
+
+            // Path sits on the overlay layer (y=0.02). 5 cm tube radius
+            // comfortably contains the body verts 2 cm below by Euclidean
+            // distance, but body is unreachable via mesh adjacency.
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint
+                {
+                    localPosition = new Vector3(-0.01f, 0.02f, 0f),
+                    localNormal = Vector3.up,
+                    radius = 0.05f
+                },
+                new PathWaypoint
+                {
+                    localPosition = new Vector3(0.01f, 0.02f, 0f),
+                    localNormal = Vector3.up,
+                    radius = 0.05f
+                }
+            };
+
+            try
+            {
+                int segments = Mathf.Max(path.Count * 8, 20);
+                var tube = CatmullRomSpline.BuildTube(path, segments);
+                var worldVerts = BlendshapeGenerator.GetSkinnedWorldRefVerts(
+                    renderer, mesh.vertices);
+                var inTube = BlendshapeGenerator.ComputeVerticesInTube(
+                    mesh, worldVerts, root.transform, tube);
+
+                int bodyInTube = 0;
+                for (int i = 0; i < 4; i++)
+                    if (inTube[i]) bodyInTube++;
+
+                Assert.Greater(bodyInTube, 0,
+                    "Body verts must be reported in-tube even when the overlay " +
+                    "layer is a disconnected triangle island that traps the " +
+                    "surface-distance flood fill inside itself.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(mesh);
             }
         }
 

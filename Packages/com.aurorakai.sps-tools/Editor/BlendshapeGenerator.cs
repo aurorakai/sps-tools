@@ -1070,6 +1070,23 @@ namespace AuroraKai.SPSTools
                 }
             }
 
+            // Fallback for topology-disconnected verts. When a renderer's mesh
+            // contains both body and overlay geometry (fluff/fur) as separate
+            // triangle islands with no shared or co-located verts, the flood
+            // fill above can't cross the gap — it seeds inside whichever layer
+            // the path sits on and leaves the other layer at MaxValue. Body
+            // verts physically inside the tube would then fail the in-tube
+            // check and never deform. Using Euclidean distance for these
+            // stranded verts still respects the tube radius (they only get
+            // rescued when Euclidean is inside the tube) and doesn't touch
+            // anything the flood fill reached — so oval surface-wrap behavior
+            // elsewhere is unaffected.
+            for (int v = 0; v < vertCount; v++)
+            {
+                if (surfDist[v] >= float.MaxValue * 0.5f && euclideanDist[v] < maxRadius)
+                    surfDist[v] = euclideanDist[v];
+            }
+
             return surfDist;
         }
 
