@@ -168,6 +168,152 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void OverlayTransfer_MatchesPrimaryNormalsAtAllWeights_WhenBaseNormalsDiffer()
+        {
+            // Regression: overlay and primary with different authored base normals
+            // (e.g. clothing over body with custom split normals) must match at
+            // every blendshape weight during preview, not just weight=1. Unity
+            // blends normals linearly, so both the base and the delta have to
+            // agree for the overlay to avoid ghosting as the effect ramps in.
+            var avatar = new GameObject("Avatar");
+
+            var primaryMesh = new Mesh();
+            primaryMesh.vertices = new Vector3[]
+            {
+                new Vector3(-1f, -1f, 0f), new Vector3(1f, -1f, 0f),
+                new Vector3(1f, 1f, 0f), new Vector3(-1f, 1f, 0f),
+                new Vector3(0f, 0f, 0f),
+            };
+            primaryMesh.normals = new Vector3[]
+            {
+                Vector3.back, Vector3.back, Vector3.back, Vector3.back, Vector3.back,
+            };
+            primaryMesh.triangles = new int[]
+            {
+                0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4,
+            };
+            primaryMesh.RecalculateBounds();
+
+            var overlayMesh = new Mesh();
+            overlayMesh.vertices = new Vector3[]
+            {
+                new Vector3(-1f, -1f, 0f), new Vector3(1f, -1f, 0f),
+                new Vector3(1f, 1f, 0f), new Vector3(-1f, 1f, 0f),
+                new Vector3(0f, 0f, 0f),
+            };
+            // Intentionally different authored normals — the regression case.
+            var tilted = new Vector3(0f, 0.3f, -0.95f).normalized;
+            overlayMesh.normals = new Vector3[] { tilted, tilted, tilted, tilted, tilted };
+            overlayMesh.triangles = new int[]
+            {
+                0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4,
+            };
+            overlayMesh.RecalculateBounds();
+
+            var primaryGo = new GameObject("Primary");
+            primaryGo.transform.SetParent(avatar.transform, false);
+            var primaryRenderer = primaryGo.AddComponent<SkinnedMeshRenderer>();
+            primaryRenderer.sharedMesh = primaryMesh;
+
+            var overlayGo = new GameObject("Overlay");
+            overlayGo.transform.SetParent(avatar.transform, false);
+            var overlayRenderer = overlayGo.AddComponent<SkinnedMeshRenderer>();
+            overlayRenderer.sharedMesh = overlayMesh;
+
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = Vector3.zero, localNormal = Vector3.back, radius = 2f },
+                new PathWaypoint { localPosition = new Vector3(0f, 2f, 0f), localNormal = Vector3.back, radius = 2f },
+            };
+
+            try
+            {
+                var results = BlendshapeGenerator.GenerateBulgeBlendshapes(
+                    new List<SkinnedMeshRenderer> { primaryRenderer, overlayRenderer },
+                    avatar.transform, path,
+                    positionCount: 1, displacement: 0.05f,
+                    outputFolder: "Assets/SPSTools/Test/Bulge/OverlayNormalsSeam",
+                    smoothingPasses: 0,
+                    recalculateNormals: true);
+
+                Assert.AreEqual(2, results.Count, "Both primary and overlay results expected.");
+                Assert.Greater(results[0].blendshapeNames.Count, 0,
+                    "Primary must have at least one generated blendshape for the test to be meaningful.");
+                Assert.AreEqual(results[0].blendshapeNames.Count, results[1].blendshapeNames.Count,
+                    "Overlay must produce the same number of blendshapes as the primary.");
+
+                var primaryOut = results[0].modifiedMesh;
+                var overlayOut = results[1].modifiedMesh;
+                var primaryVerts = primaryOut.vertices;
+                var overlayVerts = overlayOut.vertices;
+                var primaryBase = primaryOut.normals;
+                var overlayBase = overlayOut.normals;
+
+                int bsPrimary = primaryOut.GetBlendShapeIndex(results[0].blendshapeNames[0]);
+                int bsOverlay = overlayOut.GetBlendShapeIndex(results[1].blendshapeNames[0]);
+                var pDV = new Vector3[primaryOut.vertexCount];
+                var pDN = new Vector3[primaryOut.vertexCount];
+                var oDV = new Vector3[overlayOut.vertexCount];
+                var oDN = new Vector3[overlayOut.vertexCount];
+                primaryOut.GetBlendShapeFrameVertices(bsPrimary, 0, pDV, pDN, null);
+                overlayOut.GetBlendShapeFrameVertices(bsOverlay, 0, oDV, oDN, null);
+
+                int coincidentWithNonzeroDelta = 0;
+                for (int ov = 0; ov < overlayVerts.Length; ov++)
+                {
+                    int pv = -1;
+                    float minSqr = float.MaxValue;
+                    for (int pi = 0; pi < primaryVerts.Length; pi++)
+                    {
+                        float sd = (primaryVerts[pi] - overlayVerts[ov]).sqrMagnitude;
+                        if (sd < minSqr) { minSqr = sd; pv = pi; }
+                    }
+                    if (minSqr > 0.0001f) continue; // not coincident
+
+                    // Skip verts the primary didn't deform - nothing to compare.
+                    if (pDN[pv].sqrMagnitude < 1e-10f) continue;
+                    coincidentWithNonzeroDelta++;
+
+                    // Both base and delta must match so the linear base+w·delta
+                    // blend produces the same normal at every weight.
+                    Assert.AreEqual(primaryBase[pv].x, overlayBase[ov].x, 0.001f,
+                        $"Overlay base normal x mismatch at vert {ov} ↔ primary {pv}.");
+                    Assert.AreEqual(primaryBase[pv].y, overlayBase[ov].y, 0.001f,
+                        $"Overlay base normal y mismatch at vert {ov} ↔ primary {pv}.");
+                    Assert.AreEqual(primaryBase[pv].z, overlayBase[ov].z, 0.001f,
+                        $"Overlay base normal z mismatch at vert {ov} ↔ primary {pv}.");
+
+                    Assert.AreEqual(pDN[pv].x, oDN[ov].x, 0.001f,
+                        $"Overlay normal delta x mismatch at vert {ov} ↔ primary {pv}.");
+                    Assert.AreEqual(pDN[pv].y, oDN[ov].y, 0.001f,
+                        $"Overlay normal delta y mismatch at vert {ov} ↔ primary {pv}.");
+                    Assert.AreEqual(pDN[pv].z, oDN[ov].z, 0.001f,
+                        $"Overlay normal delta z mismatch at vert {ov} ↔ primary {pv}.");
+
+                    // Spot-check the blend at w=0.5 - the weight most likely to
+                    // reveal a seam during ramp-in.
+                    Vector3 primaryAtHalf = primaryBase[pv] + 0.5f * pDN[pv];
+                    Vector3 overlayAtHalf = overlayBase[ov] + 0.5f * oDN[ov];
+                    Assert.AreEqual(primaryAtHalf.x, overlayAtHalf.x, 0.001f,
+                        $"w=0.5 normal x mismatch (vert {ov} ↔ {pv}).");
+                    Assert.AreEqual(primaryAtHalf.y, overlayAtHalf.y, 0.001f,
+                        $"w=0.5 normal y mismatch (vert {ov} ↔ {pv}).");
+                    Assert.AreEqual(primaryAtHalf.z, overlayAtHalf.z, 0.001f,
+                        $"w=0.5 normal z mismatch (vert {ov} ↔ {pv}).");
+                }
+
+                Assert.Greater(coincidentWithNonzeroDelta, 0,
+                    "No coincident vert was deformed - assertions were vacuous.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(primaryMesh);
+                Object.DestroyImmediate(overlayMesh);
+            }
+        }
+
+        [Test]
         public void Preview_FiresStoppedEventWhenTrackedMeshChanges()
         {
             var root = new GameObject("Avatar");

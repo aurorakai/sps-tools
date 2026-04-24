@@ -1216,15 +1216,14 @@ namespace AuroraKai.SPSTools
 
         /// <summary>
         /// Generates blendshape frames on an overlay mesh by transferring the
-        /// primary's deltas via nearest-neighbor matching in world space. Both
-        /// vertex and normal deltas transfer — recomputing normals on the overlay's
-        /// own topology diverges from the primary at the affected-region boundary
-        /// (any topology difference produces a shading seam, and Boundary Blend
-        /// Rings amplifies it), so we inherit the primary's already-smoothed normals
-        /// directly. For each coincident vert the overlay's final (base + delta)
-        /// normal is forced to match the primary's final normal in WORLD space, so
-        /// shading is identical across the seam even when the two meshes were
-        /// authored with different custom normals.
+        /// primary's deltas via nearest-neighbor matching in world space.
+        /// Recomputing normals on the overlay's own topology produces a shading
+        /// seam at the affected-region boundary (amplified by Boundary Blend Rings),
+        /// so we inherit the primary's normals directly. At coincident verts we
+        /// rewrite BOTH the base normal and the delta to match the primary's -
+        /// matching only the final (w=1) normal still left the overlay shading
+        /// differently at every intermediate weight, visible as a ghost during
+        /// preview.
         /// </summary>
         private static BlendshapeResult GenerateOverlayByTransfer(
             SkinnedMeshRenderer overlayRenderer,
@@ -1285,6 +1284,35 @@ namespace AuroraKai.SPSTools
                 var overlayTransform = overlayRenderer.transform;
                 var names = new List<string>();
 
+                // Copy primary base normals onto the overlay at matched verts.
+                // Unity blends normals linearly (base + w·delta), so matching only
+                // the delta leaves a (1-w)·(overlayBase - primaryBase) residual that
+                // shows as a visible seam at every intermediate weight during preview.
+                // Matching the base too makes the blend identical at every weight.
+                bool overrideBaseNormals = recalculateNormals && primaryBaseNormals != null
+                    && primaryBaseNormals.Length == primaryWorldVerts.Length;
+                if (overrideBaseNormals)
+                {
+                    bool anyPrimaryHasNormals = false;
+                    foreach (var kv in primaryDeltasByName)
+                    {
+                        if (kv.Value.normalDeltas != null) { anyPrimaryHasNormals = true; break; }
+                    }
+                    if (anyPrimaryHasNormals)
+                    {
+                        bool anyOverridden = false;
+                        for (int v = 0; v < vertices.Length; v++)
+                        {
+                            int nn = nnMap[v];
+                            if (nn < 0) continue;
+                            Vector3 worldBase = primaryTransform.TransformDirection(primaryBaseNormals[nn]);
+                            overlayBaseNormals[v] = overlayTransform.InverseTransformDirection(worldBase);
+                            anyOverridden = true;
+                        }
+                        if (anyOverridden) mesh.normals = overlayBaseNormals;
+                    }
+                }
+
                 foreach (var kv in primaryDeltasByName)
                 {
                     string name = kv.Key;
@@ -1307,17 +1335,12 @@ namespace AuroraKai.SPSTools
                         Vector3 worldDelta = primaryTransform.TransformVector(primaryVerts[nn]);
                         overlayVerts[v] = overlayTransform.InverseTransformVector(worldDelta);
 
-                        // Normal target: primary's FINAL normal (base + delta) in primary
-                        // mesh-local → world → overlay mesh-local. Overlay's stored delta
-                        // is (targetFinal - overlayBase) so that at weight=1 the rendered
-                        // normal equals primary's final, regardless of how the overlay's
-                        // own base normals were authored — no seam from custom normals.
+                        // Normal delta: primary's delta rotated into overlay space.
+                        // Base was already unified above, so this is all that's needed.
                         if (writeNormals)
                         {
-                            Vector3 primaryFinal = primaryBaseNormals[nn] + primaryNormals[nn];
-                            Vector3 worldFinal = primaryTransform.TransformDirection(primaryFinal);
-                            Vector3 overlayFinalLocal = overlayTransform.InverseTransformDirection(worldFinal);
-                            overlayNormals[v] = overlayFinalLocal - overlayBaseNormals[v];
+                            Vector3 worldNormalDelta = primaryTransform.TransformDirection(primaryNormals[nn]);
+                            overlayNormals[v] = overlayTransform.InverseTransformDirection(worldNormalDelta);
                         }
                     }
 
