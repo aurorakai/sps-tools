@@ -54,10 +54,20 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           VERSION="${TAG#v}"
+          # SemVer pre-release versions contain a hyphen in the identifier
+          # (e.g. 1.0.0-beta.1). Treat those as GitHub pre-releases so they
+          # don't occupy the repo's "Latest release" slot.
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE=true
+          else
+            PRERELEASE=false
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Tag:     $TAG"
-          echo "Version: $VERSION"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Tag:        $TAG"
+          echo "Version:    $VERSION"
+          echo "Prerelease: $PRERELEASE"
 
       - name: Verify package.json version matches tag
         shell: bash
@@ -97,6 +107,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
           files: |
             ${{ steps.zip.outputs.zipPath }}
