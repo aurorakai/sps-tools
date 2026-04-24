@@ -102,3 +102,25 @@ jobs:
             ${{ steps.zip.outputs.zipPath }}
             ${{ steps.zip.outputs.zipPath }}.sha256
             ${{ env.packagePath }}/package.json
+
+      - name: Notify VPM listing to rebuild
+        # Fires repository_dispatch at aurorakai/vpm with event_type
+        # "sps-tools-released" so the listing rebuilds its index.json
+        # immediately instead of waiting for the next scheduled run.
+        #
+        # Requires the VPM_DISPATCH_TOKEN secret on this repo: a PAT
+        # (fine-grained) scoped to aurorakai/vpm with `contents: write`.
+        # If the secret is absent the step is skipped silently - useful
+        # during initial setup or if the listing is maintained manually.
+        if: ${{ env.VPM_DISPATCH_TOKEN != '' }}
+        env:
+          VPM_DISPATCH_TOKEN: ${{ secrets.VPM_DISPATCH_TOKEN }}
+        run: |
+          curl -fsSL \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $VPM_DISPATCH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/aurorakai/vpm/dispatches \
+            -d '{"event_type":"sps-tools-released","client_payload":{"version":"${{ steps.version.outputs.version }}","tag":"${{ steps.version.outputs.tag }}","zipUrl":"https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ env.packageName }}-${{ steps.version.outputs.version }}.zip","zipSha256Url":"https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ env.packageName }}-${{ steps.version.outputs.version }}.zip.sha256"}}'
+          echo "Dispatched sps-tools-released to aurorakai/vpm"
