@@ -26,6 +26,11 @@ namespace AuroraKai.SPSTools
         protected string statusMessage = "";
         protected MessageType statusType = MessageType.None;
 
+        // EditorPrefs key marking the first-run welcome popup as dismissed.
+        // Format owned by EffectWelcomeWindow.KeyFor so the dev reset menu
+        // and the production read/write path can't drift.
+        private string WelcomeEditorPrefsKey => EffectWelcomeWindow.KeyFor(GetType());
+
         // Tracked path of the currently-loaded config asset. Persisted per-window via
         // [SerializeField] so two windows of the same subclass don't share one global
         // slot. Empty string = no tracked asset (state is New).
@@ -132,6 +137,27 @@ namespace AuroraKai.SPSTools
         /// and the scene preview section.
         /// </summary>
         protected abstract void DrawEffectSpecificSections();
+
+        /// <summary>
+        /// Optional short paragraph shown above the steps on the first-run
+        /// welcome panel. Empty by default — override to add framing copy.
+        /// </summary>
+        protected virtual string WelcomeIntro => "";
+
+        /// <summary>
+        /// Ordered list of 3-4 onboarding steps shown on the first-run
+        /// welcome panel. Each entry is a (headline, body) pair: the headline
+        /// is rendered bold and prefixed with the step number; the body is a
+        /// wrapped explanation underneath.
+        /// </summary>
+        protected abstract IReadOnlyList<(string headline, string body)> WelcomeSteps { get; }
+
+        /// <summary>
+        /// Title shown in the welcome popup's title bar. Defaults to
+        /// "Welcome to {EffectName}"; override when the effect's display name
+        /// differs from the configurator's branded name.
+        /// </summary>
+        protected virtual string WelcomeWindowTitle => $"Welcome to {EffectName}";
 
         /// <summary>
         /// Builds preview threshold entries for the scene preview system.
@@ -256,6 +282,16 @@ namespace AuroraKai.SPSTools
             EditorApplication.playModeStateChanged += AutoSaveOnPlayModeChange;
 
             OnEnableExtra();
+
+            if (!EditorPrefs.GetBool(WelcomeEditorPrefsKey, false))
+            {
+                EffectWelcomeWindow.Show(
+                    title: WelcomeWindowTitle,
+                    intro: WelcomeIntro,
+                    steps: WelcomeSteps,
+                    accent: ThemeColor,
+                    editorPrefsKey: WelcomeEditorPrefsKey);
+            }
         }
 
         private void AutoSaveBeforeReload() => AutoSaveConfig();

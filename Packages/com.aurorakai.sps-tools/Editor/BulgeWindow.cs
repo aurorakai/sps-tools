@@ -20,6 +20,7 @@ namespace AuroraKai.SPSTools
         private Transform manualAddBone;
 
         private bool _showNormalAdvanced;
+        private bool _showBlendshapeAdvanced;
 
         // Normal-delta visualization (Advanced → Show Normals).
         // Off by default; drawn via the scene-view overlay subscribed in
@@ -54,6 +55,28 @@ namespace AuroraKai.SPSTools
         protected override string EffectName => "SPS Bulge";
         protected override Color ThemeColor => new Color(0.81f, 0.58f, 0.93f);
         protected override string ConfigAssetPrefix => "SPSBulge";
+
+        protected override string WelcomeWindowTitle => "Welcome to Bulge Configurator";
+
+        private static readonly IReadOnlyList<(string headline, string body)> _welcomeSteps =
+            new (string headline, string body)[]
+            {
+                ("Add an SPS socket to your avatar",
+                    "Bulge reacts to depth from a VRCFury SPS socket. If your avatar doesn't have one yet, set it up in VRCFury first."),
+                ("Drop your avatar into Avatar Root",
+                    "The tool detects existing SPS sockets on the avatar automatically."),
+                ("Pick the Target Mesh",
+                    "Choose the mesh that should bulge — usually the body. You can add extra meshes (clothing, overlays) later."),
+                ("Choose Auto-Generate or Manual",
+                    "Auto-Generate builds blendshapes from a path you draw on the mesh. Manual lets you point at blendshapes you already made in a 3D app."),
+                ("Define where the bulge happens",
+                    "In Auto-Generate, click \"Draw Path on Mesh\" and click points along the surface. In Manual, fill in your blendshape names."),
+                ("Tune Displacement and Generate",
+                    "Set Displacement for bulge height, preview, then click Generate to add it to your avatar."),
+            };
+
+        protected override IReadOnlyList<(string headline, string body)> WelcomeSteps =>
+            _welcomeSteps;
 
         protected override BulgeConfig CreateDefaultConfig() => CreateInstance<BulgeConfig>();
 
@@ -495,40 +518,11 @@ namespace AuroraKai.SPSTools
                     }
                 }
 
-                // Smoothing passes
                 float dispMM = Mathf.Round(config.blendshapeDisplacement * 1000f);
                 dispMM = EditorGUILayout.IntSlider(TooltipContent.Displacement, (int)dispMM, 1, 100);
                 config.blendshapeDisplacement = dispMM * 0.001f;
                 DrawDisplacementPreview();
-                config.blendshapeNamingPattern = EditorGUILayout.TextField(
-                    new GUIContent("Naming Pattern", "Custom blendshape naming. Use {0} as a placeholder — Bulge substitutes it with the position index (1, 2, 3…).\nLeave empty for default."),
-                    config.blendshapeNamingPattern);
-                {
-                    string pattern = config.blendshapeNamingPattern;
-                    bool hasSlot = !string.IsNullOrEmpty(pattern) && pattern.Contains("{0}");
-                    int positions = Mathf.Max(1, config.autoPositionCount);
 
-                    string Name(int i) =>
-                        hasSlot ? string.Format(pattern, i) : $"SPSBulge_Pos{i}";
-
-                    string preview = positions == 1
-                        ? Name(1)
-                        : positions == 2
-                            ? $"{Name(1)}, {Name(2)}"
-                            : $"{Name(1)}, {Name(2)}, …, {Name(positions)}";
-
-                    string prefix;
-                    if (hasSlot)
-                        prefix = $"Blendshape names ({positions} shape{(positions == 1 ? "" : "s")}):";
-                    else if (string.IsNullOrEmpty(pattern))
-                        prefix = $"Using default names ({positions} shape{(positions == 1 ? "" : "s")}):";
-                    else
-                        prefix = "Pattern is missing {0} — using defaults:";
-
-                    EditorGUILayout.HelpBox($"{prefix} {preview}", MessageType.None);
-                }
-                config.smoothingPasses = EditorGUILayout.IntSlider(
-                    TooltipContent.SmoothingPasses, config.smoothingPasses, 0, 10);
                 config.recalculateNormals = EditorGUILayout.Toggle(
                     TooltipContent.RecalculateNormals, config.recalculateNormals);
 
@@ -592,19 +586,61 @@ namespace AuroraKai.SPSTools
                     EditorGUI.indentLevel--;
                 }
 
-                // Subdivision
-                config.subdivideAffectedRegion = EditorGUILayout.Toggle(
-                    TooltipContent.SubdivideRegion, config.subdivideAffectedRegion);
-                if (config.subdivideAffectedRegion)
+                // Rarely-tuned blendshape parameters tucked away by default.
+                // Labeled "More options" so it doesn't collide with the
+                // "Advanced" sub-foldout under Recalculate Normals above.
+                _showBlendshapeAdvanced = EditorGUILayout.Foldout(
+                    _showBlendshapeAdvanced, "More options", true);
+                if (_showBlendshapeAdvanced)
                 {
                     EditorGUI.indentLevel++;
-                    config.subdivisionPasses = EditorGUILayout.IntSlider(
-                        TooltipContent.SubdivisionPasses, config.subdivisionPasses, 1, 3);
-                    if (config.subdivisionPasses >= 2)
-                        EditorGUILayout.HelpBox(
-                            "Multiple passes significantly increase vertex count in the affected region. " +
-                            "This may impact avatar performance.",
-                            MessageType.Warning);
+
+                    config.blendshapeNamingPattern = EditorGUILayout.TextField(
+                        new GUIContent("Naming Pattern", "Custom blendshape naming. Use {0} as a placeholder — Bulge substitutes it with the position index (1, 2, 3…).\nLeave empty for default."),
+                        config.blendshapeNamingPattern);
+                    {
+                        string pattern = config.blendshapeNamingPattern;
+                        bool hasSlot = !string.IsNullOrEmpty(pattern) && pattern.Contains("{0}");
+                        int positions = Mathf.Max(1, config.autoPositionCount);
+
+                        string Name(int i) =>
+                            hasSlot ? string.Format(pattern, i) : $"SPSBulge_Pos{i}";
+
+                        string preview = positions == 1
+                            ? Name(1)
+                            : positions == 2
+                                ? $"{Name(1)}, {Name(2)}"
+                                : $"{Name(1)}, {Name(2)}, …, {Name(positions)}";
+
+                        string prefix;
+                        if (hasSlot)
+                            prefix = $"Blendshape names ({positions} shape{(positions == 1 ? "" : "s")}):";
+                        else if (string.IsNullOrEmpty(pattern))
+                            prefix = $"Using default names ({positions} shape{(positions == 1 ? "" : "s")}):";
+                        else
+                            prefix = "Pattern is missing {0} — using defaults:";
+
+                        EditorGUILayout.HelpBox($"{prefix} {preview}", MessageType.None);
+                    }
+
+                    config.smoothingPasses = EditorGUILayout.IntSlider(
+                        TooltipContent.SmoothingPasses, config.smoothingPasses, 0, 10);
+
+                    config.subdivideAffectedRegion = EditorGUILayout.Toggle(
+                        TooltipContent.SubdivideRegion, config.subdivideAffectedRegion);
+                    if (config.subdivideAffectedRegion)
+                    {
+                        EditorGUI.indentLevel++;
+                        config.subdivisionPasses = EditorGUILayout.IntSlider(
+                            TooltipContent.SubdivisionPasses, config.subdivisionPasses, 1, 3);
+                        if (config.subdivisionPasses >= 2)
+                            EditorGUILayout.HelpBox(
+                                "Multiple passes significantly increase vertex count in the affected region. " +
+                                "This may impact avatar performance.",
+                                MessageType.Warning);
+                        EditorGUI.indentLevel--;
+                    }
+
                     EditorGUI.indentLevel--;
                 }
 
