@@ -409,6 +409,61 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void Preview_RestoresNonZeroPreSetWeightAfterRebind()
+        {
+            var root = new GameObject("Avatar");
+            var primaryMesh = CreateStripMesh();
+            // Both meshes have "Foo" but at different indices — swap shifts it.
+            var overlayA = CreateBlendshapeMesh("Foo");
+            var overlayB = CreateBlendshapeMesh("Bar", "Foo");
+            var clip = new AnimationClip();
+            CreateRenderer(root.transform, "Primary", primaryMesh, out _);
+            CreateRenderer(root.transform, "Overlay", overlayA, out var overlay);
+
+            // User had a non-zero weight on the old slot before preview started.
+            overlay.SetBlendShapeWeight(0, 25f);
+
+            AnimationUtility.SetEditorCurve(
+                clip,
+                EditorCurveBinding.FloatCurve(
+                    "Overlay", typeof(SkinnedMeshRenderer), "blendShape.Foo"),
+                new AnimationCurve(new Keyframe(0f, 50f)));
+
+            try
+            {
+                ScenePreviewManager.StartPreview(
+                    root, new List<string> { "Primary" }, Vector3.zero);
+                var entries = new List<(float, AnimationClip)> { (0f, clip) };
+
+                ScenePreviewManager.SampleAtDepth(0f, entries);
+                Assert.AreEqual(50f, overlay.GetBlendShapeWeight(0), 0.001f);
+
+                overlay.sharedMesh = overlayB;
+                ScenePreviewManager.SampleAtDepth(1f, entries);
+
+                // After swap, "Foo" lives at index 1 on overlayB. The old slot 0
+                // (on overlayB this is "Bar") must be restored to the user's
+                // pre-preview value of 25f, not zeroed.
+                Assert.AreEqual(25f, overlay.GetBlendShapeWeight(0), 0.001f,
+                    "Restored weight on the rebind path must come from the user's pre-preview value, not 0.");
+                Assert.AreEqual(50f, overlay.GetBlendShapeWeight(1), 0.001f);
+
+                ScenePreviewManager.StopPreview();
+                Assert.AreEqual(25f, overlay.GetBlendShapeWeight(0), 0.001f,
+                    "StopPreview must also restore the pre-preview value, not the zero we wrote during rebind.");
+            }
+            finally
+            {
+                ScenePreviewManager.StopPreview();
+                Object.DestroyImmediate(clip);
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(primaryMesh);
+                Object.DestroyImmediate(overlayA);
+                Object.DestroyImmediate(overlayB);
+            }
+        }
+
+        [Test]
         public void Preview_FiresStoppedEventWhenTrackedMeshChanges()
         {
             var root = new GameObject("Avatar");

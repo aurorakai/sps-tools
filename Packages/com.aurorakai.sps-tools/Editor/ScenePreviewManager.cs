@@ -33,10 +33,17 @@ namespace AuroraKai.SPSTools
         // restore them on StopPreview without needing AnimationMode (which would
         // reset the avatar's pose to bind pose - breaks visual continuity with
         // non-skinned overlay meshes).
-        private struct BlendshapeRef
+        private struct BlendshapeRef : System.IEquatable<BlendshapeRef>
         {
             public SkinnedMeshRenderer renderer;
-            public int index;
+            public string name;
+
+            public bool Equals(BlendshapeRef other)
+                => renderer == other.renderer && name == other.name;
+            public override bool Equals(object obj)
+                => obj is BlendshapeRef other && Equals(other);
+            public override int GetHashCode()
+                => System.HashCode.Combine(renderer != null ? renderer.GetInstanceID() : 0, name);
         }
         private static readonly Dictionary<BlendshapeRef, float> s_originalWeights
             = new Dictionary<BlendshapeRef, float>();
@@ -215,20 +222,24 @@ namespace AuroraKai.SPSTools
                     }
 
                     // If the blendshape moved to a different index (e.g. mesh was
-                    // swapped), reset the old slot to avoid a stale weight.
+                    // swapped), restore the old slot. Snapshot the current weight at
+                    // the old index before writing — keyed by NAME so a later StopPreview
+                    // can find it via the new mesh's name lookup.
                     if (oldIndex != blendshapeIndex
                         && oldIndex >= 0 && oldIndex < mesh.blendShapeCount)
                     {
-                        var oldBref = new BlendshapeRef { renderer = rb.renderer, index = oldIndex };
-                        s_originalWeights.TryGetValue(oldBref, out float restoreValue);
-                        rb.renderer.SetBlendShapeWeight(oldIndex, restoreValue);
+                        string oldName = mesh.GetBlendShapeName(oldIndex);
+                        var oldBref = new BlendshapeRef { renderer = rb.renderer, name = oldName };
+                        if (!s_originalWeights.ContainsKey(oldBref))
+                            s_originalWeights[oldBref] = rb.renderer.GetBlendShapeWeight(oldIndex);
+                        rb.renderer.SetBlendShapeWeight(oldIndex, s_originalWeights[oldBref]);
                     }
 
                     rb.blendshapeIndex = blendshapeIndex;
                     s_resolvedBindings[i] = rb;
                 }
 
-                var bref = new BlendshapeRef { renderer = rb.renderer, index = blendshapeIndex };
+                var bref = new BlendshapeRef { renderer = rb.renderer, name = rb.blendshapeName };
                 if (!s_originalWeights.ContainsKey(bref))
                     s_originalWeights[bref] = rb.renderer.GetBlendShapeWeight(blendshapeIndex);
 
@@ -319,10 +330,10 @@ namespace AuroraKai.SPSTools
                 foreach (var kv in s_originalWeights)
                 {
                     var r = kv.Key.renderer;
-                    if (r != null && r.sharedMesh != null
-                        && kv.Key.index >= 0
-                        && kv.Key.index < r.sharedMesh.blendShapeCount)
-                        r.SetBlendShapeWeight(kv.Key.index, kv.Value);
+                    if (r == null || r.sharedMesh == null) continue;
+                    int idx = r.sharedMesh.GetBlendShapeIndex(kv.Key.name);
+                    if (idx >= 0 && idx < r.sharedMesh.blendShapeCount)
+                        r.SetBlendShapeWeight(idx, kv.Value);
                 }
                 s_originalWeights.Clear();
 
