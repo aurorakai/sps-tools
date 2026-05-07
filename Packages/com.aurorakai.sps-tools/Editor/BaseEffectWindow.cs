@@ -61,7 +61,7 @@ namespace AuroraKai.SPSTools
         protected SkinnedMeshRenderer targetRenderer;
 
         // Scene preview state
-        protected float previewDepth;
+        [SerializeField] protected float previewDepth;
         protected List<(float threshold, AnimationClip clip)> previewEntries;
         protected int previewConfigHash;
 
@@ -69,10 +69,10 @@ namespace AuroraKai.SPSTools
         // path region. Recomputed only when the inputs hash changes.
         private float _cachedAvgEdge;
         private int _avgEdgeCacheKey;
-        private bool _showDisplacementPreview;
+        [SerializeField] private bool _showDisplacementPreview;
 
         // Blendshape auto-generate toggle
-        protected bool blendshapeAutoGenerate;
+        [SerializeField] protected bool blendshapeAutoGenerate;
 
         // Socket detection
         protected List<DetectedSocket> detectedSockets = new List<DetectedSocket>();

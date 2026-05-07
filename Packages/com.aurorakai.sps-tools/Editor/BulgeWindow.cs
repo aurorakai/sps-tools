@@ -19,8 +19,8 @@ namespace AuroraKai.SPSTools
         // Bone chain manual-add helper
         private Transform manualAddBone;
 
-        private bool _showNormalAdvanced;
-        private bool _showBlendshapeAdvanced;
+        [SerializeField] private bool _showNormalAdvanced;
+        [SerializeField] private bool _showBlendshapeAdvanced;
 
         // Normal-delta visualization (Advanced → Show Normals).
         // Off by default; drawn via the scene-view overlay subscribed in
@@ -28,9 +28,9 @@ namespace AuroraKai.SPSTools
         // blend-frame read buffers are all reused across frames - the first
         // pass of this feature reallocated them per repaint and burned
         // ~2 MB/frame on a 50k-vert mesh.
-        private bool _showNormals;
-        private float _normalLength = 0.015f;
-        private bool _highlightChanged = true;
+        [SerializeField] private bool _showNormals;
+        [SerializeField] private float _normalLength = 0.015f;
+        [SerializeField] private bool _highlightChanged = true;
         private Mesh _bakedNormalsMesh;
         private Mesh _normalsMaskMesh;         // identity of the mesh _hasNormalDelta belongs to
         private int _normalsMaskBlendCount;    // blendshape count baked into _hasNormalDelta
@@ -217,7 +217,7 @@ namespace AuroraKai.SPSTools
 
         // --- Bulge Travel Range ---
 
-        private bool showAdvancedRange;
+        [SerializeField] private bool showAdvancedRange;
 
         private void DrawBulgeTravelRange()
         {
