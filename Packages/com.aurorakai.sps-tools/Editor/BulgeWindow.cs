@@ -1074,6 +1074,8 @@ namespace AuroraKai.SPSTools
         {
             if (!_showNormals || targetRenderer == null || targetRenderer.sharedMesh == null)
                 return;
+            if (Event.current.type != EventType.Repaint)
+                return;
 
             var sharedMesh = targetRenderer.sharedMesh;
             int vertCount = sharedMesh.vertexCount;
