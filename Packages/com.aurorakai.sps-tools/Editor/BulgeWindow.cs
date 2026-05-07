@@ -369,6 +369,7 @@ namespace AuroraKai.SPSTools
 
             // Ordered list of bone path entries
             EditorGUILayout.LabelField("Bone Chain", EditorStyles.miniBoldLabel);
+            int removeAt = -1;
             for (int i = 0; i < config.boneChain.Count; i++)
             {
                 EditorGUILayout.BeginHorizontal();
@@ -376,14 +377,9 @@ namespace AuroraKai.SPSTools
                 EditorGUILayout.LabelField(config.boneChain[i], EditorStyles.miniLabel);
 
                 if (GUILayout.Button(RemoveGlyph, GUILayout.Width(20)))
-                {
-                    config.boneChain.RemoveAt(i);
-                    EditorGUILayout.EndHorizontal();
-                    break;
-                }
+                    removeAt = i;
                 EditorGUILayout.EndHorizontal();
 
-                // PhysBone warning per bone
                 if (config.avatarRoot != null)
                 {
                     var boneTransform = config.avatarRoot.transform.Find(config.boneChain[i]);
@@ -400,6 +396,7 @@ namespace AuroraKai.SPSTools
                     }
                 }
             }
+            if (removeAt >= 0) config.boneChain.RemoveAt(removeAt);
 
             // Add Bone button (manual add via ObjectField)
             EditorGUILayout.Space(2);
