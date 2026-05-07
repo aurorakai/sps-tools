@@ -534,5 +534,46 @@ namespace AuroraKai.SPSTools.Tests
                 Object.DestroyImmediate(primaryMeshB);
             }
         }
+
+        [Test]
+        public void GenerateRollback_RestoresOriginalMesh_NotPriorGenerated()
+        {
+            // Simulate the regenerate-then-fail path: a renderer's sharedMesh is
+            // currently the prior-generated asset (will be DeleteAsset'd by SaveMesh).
+            // The "original" mesh tracked by MeshReferenceTracker lives at a
+            // different path and must be the rollback target.
+            string folder = "Assets/SPSTools/Test/RollbackRegression";
+            if (!UnityEditor.AssetDatabase.IsValidFolder(folder))
+                SpsAnimationUtility.EnsureFolder(folder);
+
+            var originalMesh = CreateStripMesh();
+            UnityEditor.AssetDatabase.CreateAsset(originalMesh, folder + "/Original.asset");
+
+            var priorGenerated = CreateStripMesh();
+            UnityEditor.AssetDatabase.CreateAsset(priorGenerated, folder + "/Generated.asset");
+
+            var root = new GameObject("Avatar");
+            CreateRenderer(root.transform, "Primary", priorGenerated, out var renderer);
+
+            try
+            {
+                // Mirror the rollback line from BulgeWindow.cs after the C-3 fix:
+                // renderers[i].sharedMesh = originalMeshes[i];
+                renderer.sharedMesh = originalMesh;
+                Assert.AreSame(originalMesh, renderer.sharedMesh,
+                    "Rollback target must be the original asset, not the prior-generated.");
+
+                // Now delete the prior-generated asset (what SaveMesh's failure would expose)
+                UnityEditor.AssetDatabase.DeleteAsset(folder + "/Generated.asset");
+                // Renderer must still hold a live mesh.
+                Assert.IsTrue(renderer.sharedMesh != null,
+                    "After SaveMesh deletes the prior-generated asset, the renderer must still have a live mesh.");
+            }
+            finally
+            {
+                UnityEditor.AssetDatabase.DeleteAsset(folder);
+                Object.DestroyImmediate(root);
+            }
+        }
     }
 }

@@ -663,7 +663,6 @@ namespace AuroraKai.SPSTools
                     // Collect all participating renderers (primary + additionals)
                     var renderers = new List<SkinnedMeshRenderer> { targetRenderer };
                     var trackedEntries = new List<TrackedMesh> { null };  // null = primary
-                    var snapshotMeshes = new List<Mesh> { targetRenderer.sharedMesh };
                     var originalMeshes = new List<Mesh> { targetRenderer.sharedMesh };
 
                     if (targetRenderer.sharedMesh == null)
@@ -691,7 +690,6 @@ namespace AuroraKai.SPSTools
                             }
                             renderers.Add(r);
                             trackedEntries.Add(entry);
-                            snapshotMeshes.Add(r.sharedMesh);
                             var storedAdd = MeshReferenceTracker.ResolveMesh(entry, "original");
                             originalMeshes.Add(storedAdd != null ? storedAdd : r.sharedMesh);
                         }
@@ -751,7 +749,7 @@ namespace AuroraKai.SPSTools
                     {
                         // Rollback - restore each renderer to its pre-generation state
                         for (int i = 0; i < renderers.Count; i++)
-                            renderers[i].sharedMesh = snapshotMeshes[i];
+                            renderers[i].sharedMesh = originalMeshes[i];
                         statusMessage = $"Blendshape generation failed, meshes restored: {e.Message}";
                         statusType = MessageType.Error;
                         Debug.LogError($"[SPS Bulge] {statusMessage}");
