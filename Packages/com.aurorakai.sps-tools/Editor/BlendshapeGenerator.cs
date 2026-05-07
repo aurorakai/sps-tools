@@ -168,7 +168,7 @@ namespace AuroraKai.SPSTools
 
             for (int i = 1; i < renderers.Count; i++)
             {
-                string suffix = "_" + SanitizeAssetName(renderers[i].gameObject.name);
+                string suffix = "_" + SanitizeAssetName(renderers[i].gameObject.name) + $"_{i}";
                 var overlay = GenerateOverlayByTransfer(
                     renderers[i], renderers[0], avatarRoot, path,
                     primaryDeltasByName, primaryWorldVerts, searchablePrimaryIndices,
