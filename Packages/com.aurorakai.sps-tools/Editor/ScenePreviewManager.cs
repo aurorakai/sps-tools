@@ -228,11 +228,19 @@ namespace AuroraKai.SPSTools
                     if (oldIndex != blendshapeIndex
                         && oldIndex >= 0 && oldIndex < mesh.blendShapeCount)
                     {
-                        string oldName = mesh.GetBlendShapeName(oldIndex);
-                        var oldBref = new BlendshapeRef { renderer = rb.renderer, name = oldName };
-                        if (!s_originalWeights.ContainsKey(oldBref))
-                            s_originalWeights[oldBref] = rb.renderer.GetBlendShapeWeight(oldIndex);
-                        rb.renderer.SetBlendShapeWeight(oldIndex, s_originalWeights[oldBref]);
+                        // The binding's name (rb.blendshapeName) is what was at oldIndex
+                        // before the swap — that's where we already snapshotted the user's
+                        // pre-preview value. Use that key, not mesh.GetBlendShapeName(oldIndex)
+                        // (which on the new mesh is whatever the swap shifted into oldIndex).
+                        var oldBref = new BlendshapeRef { renderer = rb.renderer, name = rb.blendshapeName };
+                        if (!s_originalWeights.TryGetValue(oldBref, out float restoreValue))
+                        {
+                            // Rebind fired on the very first sample, before any snapshot —
+                            // use the current slot value as a safe fallback.
+                            restoreValue = rb.renderer.GetBlendShapeWeight(oldIndex);
+                            s_originalWeights[oldBref] = restoreValue;
+                        }
+                        rb.renderer.SetBlendShapeWeight(oldIndex, restoreValue);
                     }
 
                     rb.blendshapeIndex = blendshapeIndex;
