@@ -199,11 +199,27 @@ namespace AuroraKai.SPSTools
             if (idProp != null)
                 idProp.stringValue = "";
 
-            // Set type to FX (enum index 5)
+            // Resolve "FX" by name — VRCFury can reorder this enum across versions,
+            // so a hardcoded ordinal is fragile.
             var typeProp = entry.FindPropertyRelative("type");
             if (typeProp == null)
                 throw new InvalidOperationException("VRCFury controller type was not found.");
-            typeProp.enumValueIndex = 5;
+
+            int fxIdx = -1;
+            var enumNames = typeProp.enumNames;
+            for (int i = 0; i < enumNames.Length; i++)
+            {
+                if (string.Equals(enumNames[i], "FX", StringComparison.OrdinalIgnoreCase))
+                {
+                    fxIdx = i;
+                    break;
+                }
+            }
+            if (fxIdx < 0)
+                throw new InvalidOperationException(
+                    "VRCFury controller type enum has no 'FX' value. " +
+                    "VRCFury may have changed its enum layout in this version.");
+            typeProp.enumValueIndex = fxIdx;
         }
 
         private static void ConfigureGlobalParams(
