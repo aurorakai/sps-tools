@@ -157,8 +157,10 @@ namespace AuroraKai.SPSTools
                 {
                     foreach (var file in Directory.GetFiles(fullPath))
                     {
-                        string ext = Path.GetExtension(file).ToLower();
-                        if (ext != ".anim" && ext != ".controller") continue;
+                        string ext = Path.GetExtension(file);
+                        if (!string.Equals(ext, ".anim", System.StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(ext, ".controller", System.StringComparison.OrdinalIgnoreCase))
+                            continue;
 
                         string assetPath = file.Replace("\\", "/");
                         int assetsIdx = assetPath.IndexOf("Assets/");
