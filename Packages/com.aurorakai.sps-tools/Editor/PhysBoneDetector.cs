@@ -7,6 +7,32 @@ namespace AuroraKai.SPSTools
     /// </summary>
     public static class PhysBoneDetector
     {
+        private static System.Type s_physBoneType;
+        private static bool s_physBoneTypeResolved;
+
+        private static System.Type ResolvePhysBoneType()
+        {
+            if (s_physBoneTypeResolved) return s_physBoneType;
+            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    foreach (var t in asm.GetTypes())
+                    {
+                        if (t.Name == "VRCPhysBone" && (t.FullName?.StartsWith("VRC.") ?? false))
+                        {
+                            s_physBoneType = t;
+                            s_physBoneTypeResolved = true;
+                            return t;
+                        }
+                    }
+                }
+                catch { /* ReflectionTypeLoadException - skip */ }
+            }
+            s_physBoneTypeResolved = true; // latch even if missing — VRCSDK may not be installed
+            return null;
+        }
+
         /// <summary>
         /// Checks if a bone or any of its ancestors has a PhysBone component.
         /// Returns the name of the conflicting PhysBone GameObject, or null if safe.
@@ -15,6 +41,9 @@ namespace AuroraKai.SPSTools
         {
             if (bone == null) return null;
 
+            var physBoneType = ResolvePhysBoneType();
+            if (physBoneType == null) return null;
+
             // Check the bone itself and walk up the hierarchy
             var current = bone;
             while (current != null)
@@ -22,8 +51,7 @@ namespace AuroraKai.SPSTools
                 foreach (var comp in current.GetComponents<Component>())
                 {
                     if (comp == null) continue;
-                    var typeName = comp.GetType().Name;
-                    if (typeName.Contains("PhysBone") && !typeName.Contains("Collider"))
+                    if (physBoneType.IsAssignableFrom(comp.GetType()))
                     {
                         // Check if our target bone is in the ignore list
                         var so = new UnityEditor.SerializedObject(comp);
