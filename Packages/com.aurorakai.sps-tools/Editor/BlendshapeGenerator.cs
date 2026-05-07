@@ -373,6 +373,7 @@ namespace AuroraKai.SPSTools
 
                 Undo.RecordObject(renderer, "Assign generated mesh");
                 renderer.sharedMesh = mesh;
+                PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
 
                 return new BlendshapeResult
                 {
@@ -1370,6 +1371,7 @@ namespace AuroraKai.SPSTools
 
                 Undo.RecordObject(overlayRenderer, "Assign generated mesh");
                 overlayRenderer.sharedMesh = mesh;
+                PrefabUtility.RecordPrefabInstancePropertyModifications(overlayRenderer);
 
                 return new BlendshapeResult
                 {
