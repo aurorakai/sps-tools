@@ -232,14 +232,41 @@ namespace AuroraKai.SPSTools
             int idx = vertices.Count;
 
             vertices.Add((vertices[a] + vertices[b]) * 0.5f);
-            if (hasN) normals.Add(((normals[a] + normals[b]) * 0.5f).normalized);
+
+            if (hasN)
+            {
+                Vector3 na = normals[a], nb = normals[b];
+                Vector3 sum = na + nb;
+                // If endpoints are near-opposite, the average is ~zero; fall back to
+                // one endpoint rather than emitting a zero normal.
+                Vector3 midN = sum.sqrMagnitude > 1e-6f ? sum.normalized : na;
+                normals.Add(midN);
+            }
+
             if (hasT)
             {
                 Vector4 ta = tangents[a], tb = tangents[b];
-                tangents.Add(new Vector4(
-                    (ta.x + tb.x) * 0.5f, (ta.y + tb.y) * 0.5f,
-                    (ta.z + tb.z) * 0.5f, ta.w)); // preserve w sign
+                // Tangent w stores handedness sign. When endpoints sit on opposite
+                // sides of a mirrored-UV seam (sign mismatch), averaging xyz produces
+                // a near-zero tangent; pick endpoint A's full tangent to keep a
+                // consistent handedness rather than blending across the seam.
+                if (Mathf.Sign(ta.w) != Mathf.Sign(tb.w))
+                {
+                    tangents.Add(ta);
+                }
+                else
+                {
+                    Vector3 sumT = new Vector3(
+                        (ta.x + tb.x) * 0.5f,
+                        (ta.y + tb.y) * 0.5f,
+                        (ta.z + tb.z) * 0.5f);
+                    if (sumT.sqrMagnitude < 1e-6f)
+                        tangents.Add(ta);
+                    else
+                        tangents.Add(new Vector4(sumT.x, sumT.y, sumT.z, ta.w));
+                }
             }
+
             if (hasUV) uv.Add((uv[a] + uv[b]) * 0.5f);
             if (hasUV2) uv2.Add((uv2[a] + uv2[b]) * 0.5f);
             if (hasC) colors.Add((colors[a] + colors[b]) * 0.5f);

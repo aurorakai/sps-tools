@@ -237,5 +237,53 @@ namespace AuroraKai.SPSTools.Tests
                 Object.DestroyImmediate(mesh);
             }
         }
+
+        [Test]
+        public void Subdivide_MidpointNormalIsNotZero_WhenEndpointNormalsAreOpposite()
+        {
+            var mesh = new Mesh();
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, 0f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0.5f, 1f, 0f),
+            };
+            // Endpoints 0 and 1 have near-opposite normals (a sharp fold).
+            mesh.normals = new[]
+            {
+                new Vector3(0f, 1f, 0f), new Vector3(0f, -1f, 0f), Vector3.up,
+            };
+            mesh.triangles = new[] { 0, 1, 2 };
+            mesh.RecalculateBounds();
+
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = new Vector3(0.5f, 0f, 0f), localNormal = Vector3.up, radius = 1f },
+                new PathWaypoint { localPosition = new Vector3(0.5f, 0.1f, 0f), localNormal = Vector3.up, radius = 1f },
+            };
+
+            var avatar = new GameObject("Avatar");
+            var go = new GameObject("Mesh");
+            go.transform.SetParent(avatar.transform, false);
+
+            try
+            {
+                var result = MeshSubdivider.SubdivideInRegion(
+                    mesh, path, go.transform, avatar.transform, passes: 1);
+
+                Assert.Greater(result.vertexCount, mesh.vertexCount,
+                    "Sanity: subdivision must add midpoints.");
+
+                var resultNormals = result.normals;
+                for (int i = mesh.vertexCount; i < result.vertexCount; i++)
+                {
+                    Assert.Greater(resultNormals[i].sqrMagnitude, 0.001f,
+                        $"Midpoint normal at vert {i} is near-zero — averaged opposites then normalized.");
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(mesh);
+            }
+        }
     }
 }
