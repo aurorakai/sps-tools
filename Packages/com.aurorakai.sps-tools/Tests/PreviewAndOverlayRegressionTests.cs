@@ -464,6 +464,35 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void Preview_AutoStopsOnSceneSaving()
+        {
+            var root = new GameObject("Avatar");
+            var primaryMesh = CreateStripMesh();
+            CreateRenderer(root.transform, "Primary", primaryMesh, out _);
+
+            try
+            {
+                ScenePreviewManager.StartPreview(
+                    root, new List<string> { "Primary" }, Vector3.zero);
+                Assert.IsTrue(ScenePreviewManager.IsPreviewing);
+
+                // Simulate the editor's pre-save hook firing.
+                ScenePreviewManager.OnSceneSaving(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene(),
+                    "dummy/path.unity");
+
+                Assert.IsFalse(ScenePreviewManager.IsPreviewing,
+                    "Preview must stop before the scene is saved so temporary blendshape weights aren't persisted.");
+            }
+            finally
+            {
+                ScenePreviewManager.StopPreview();
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(primaryMesh);
+            }
+        }
+
+        [Test]
         public void Preview_FiresStoppedEventWhenTrackedMeshChanges()
         {
             var root = new GameObject("Avatar");

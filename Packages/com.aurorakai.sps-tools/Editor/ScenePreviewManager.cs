@@ -128,8 +128,17 @@ namespace AuroraKai.SPSTools
             // Register safety nets (unregister first to prevent double-registration)
             EditorApplication.playModeStateChanged -= OnPlayModeChanged;
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;
+            UnityEditor.SceneManagement.EditorSceneManager.sceneSaving -= OnSceneSaving;
+            UnityEditor.SceneManagement.EditorSceneManager.sceneOpening -= OnSceneOpening;
+            EditorApplication.quitting -= OnEditorQuitting;
+            Undo.undoRedoPerformed -= OnUndoRedo;
+
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
+            UnityEditor.SceneManagement.EditorSceneManager.sceneSaving += OnSceneSaving;
+            UnityEditor.SceneManagement.EditorSceneManager.sceneOpening += OnSceneOpening;
+            EditorApplication.quitting += OnEditorQuitting;
+            Undo.undoRedoPerformed += OnUndoRedo;
         }
 
         public static void SampleAtDepth(
@@ -365,6 +374,10 @@ namespace AuroraKai.SPSTools
 
                 EditorApplication.playModeStateChanged -= OnPlayModeChanged;
                 AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneSaving -= OnSceneSaving;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneOpening -= OnSceneOpening;
+                EditorApplication.quitting -= OnEditorQuitting;
+                Undo.undoRedoPerformed -= OnUndoRedo;
 
                 IsPreviewing = false;
                 s_avatarRoot = null;
@@ -416,6 +429,13 @@ namespace AuroraKai.SPSTools
         {
             StopPreview();
         }
+
+        internal static void OnSceneSaving(UnityEngine.SceneManagement.Scene scene, string path)
+            => StopPreview();
+        private static void OnSceneOpening(string path, UnityEditor.SceneManagement.OpenSceneMode mode)
+            => StopPreview();
+        private static void OnEditorQuitting() => StopPreview();
+        private static void OnUndoRedo() => StopPreview();
 
         /// <summary>
         /// Composites animation clips at a given depth using 1D blend tree interpolation.
