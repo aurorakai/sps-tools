@@ -469,16 +469,30 @@ namespace AuroraKai.SPSTools
                 catch (ArgumentException) { }
             }
 
+            // Only latch once every type AddFxFloatToSocket needs is resolved.
+            // If any are missing (VRCFury still loading, or a future version
+            // renamed/relocated a type), keep retrying so we don't permanently
+            // disable depth-action wiring until domain reload.
+            bool allCriticalResolved =
+                s_hapticSocketType != null &&
+                s_fxFloatActionType != null &&
+                s_stateType != null &&
+                s_depthActionNewType != null;
+
             if (s_hapticSocketType == null)
             {
                 Debug.LogWarning("[SPS Effects] Could not resolve VRCFuryHapticSocket type. " +
                     "Socket detection will use fallback name matching.");
-                // Leave s_typesResolved = false so a later call retries resolution
-                // once the VRCFury assembly finishes loading.
-                return;
+            }
+            else if (!allCriticalResolved)
+            {
+                Debug.LogWarning("[SPS Effects] VRCFury types partially resolved. " +
+                    $"FxFloatAction={s_fxFloatActionType != null}, " +
+                    $"State={s_stateType != null}, DepthActionNew={s_depthActionNewType != null}. " +
+                    "Will retry on next call.");
             }
 
-            s_typesResolved = true;
+            s_typesResolved = allCriticalResolved;
         }
 
         private static Type FindTypeInVRCFury(string simpleName)
