@@ -30,11 +30,11 @@ namespace AuroraKai.SPSTools
         // teardown apart from a real user dismiss.
         private static bool s_assemblyReloading;
 
-        private string _intro;
-        private string[] _stepHeadlines;
-        private string[] _stepBodies;
-        private Color _accent;
-        private string _editorPrefsKey;
+        [SerializeField] private string _intro;
+        [SerializeField] private string[] _stepHeadlines;
+        [SerializeField] private string[] _stepBodies;
+        [SerializeField] private Color _accent;
+        [SerializeField] private string _editorPrefsKey;
 
         // Lazy-built styles (EditorStyles isn't ready in OnEnable).
         private GUIStyle _introStyle;
@@ -186,6 +186,12 @@ namespace AuroraKai.SPSTools
         {
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+
+            // Defensive: a window surviving a reload before [SerializeField] was
+            // added (older serialized layout) will still have empty state.
+            // Closing is the right move — we'd otherwise paint a blank panel.
+            if (_stepHeadlines == null || string.IsNullOrEmpty(_editorPrefsKey))
+                EditorApplication.delayCall += () => { if (this != null) Close(); };
         }
 
         private void OnDisable()
