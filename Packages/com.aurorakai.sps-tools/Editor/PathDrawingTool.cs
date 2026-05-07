@@ -935,7 +935,26 @@ namespace AuroraKai.SPSTools
             if (s_snapCachedMesh != mesh)
             {
                 s_snapCachedMesh = mesh;
-                s_snapVertices = mesh.vertices;
+                // On a SkinnedMeshRenderer the user clicks against the posed (skinned)
+                // surface, so the snap candidates have to be the posed positions too -
+                // mesh.vertices is bind-pose and can be cm off on a posed avatar.
+                if (smr != null)
+                {
+                    var baked = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                    try
+                    {
+                        smr.BakeMesh(baked, true);
+                        s_snapVertices = baked.vertices;
+                    }
+                    finally
+                    {
+                        UnityEngine.Object.DestroyImmediate(baked);
+                    }
+                }
+                else
+                {
+                    s_snapVertices = mesh.vertices;
+                }
                 s_snapNormals = mesh.normals;
                 s_snapTree = new KDTreeNearest(s_snapVertices);
             }
