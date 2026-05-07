@@ -154,6 +154,7 @@ namespace AuroraKai.SPSTools
 
         protected override void OnEnableExtra()
         {
+            SceneView.duringSceneGui -= DrawNormalsOverlay;
             SceneView.duringSceneGui += DrawNormalsOverlay;
         }
 

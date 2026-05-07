@@ -273,6 +273,7 @@ namespace AuroraKai.SPSTools
 
             ScenePreviewManager.PreviewStopped -= OnScenePreviewStopped;
             ScenePreviewManager.PreviewStopped += OnScenePreviewStopped;
+            SceneView.duringSceneGui -= OnSceneGUIOverlay;
             SceneView.duringSceneGui += OnSceneGUIOverlay;
 
             // Autosave hooks - every path where the in-memory config could be lost
