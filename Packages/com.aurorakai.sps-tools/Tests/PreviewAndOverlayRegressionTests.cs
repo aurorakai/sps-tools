@@ -7,6 +7,13 @@ namespace AuroraKai.SPSTools.Tests
 {
     public class PreviewAndOverlayRegressionTests
     {
+        [TearDown]
+        public void TearDown()
+        {
+            if (ScenePreviewManager.IsPreviewing)
+                ScenePreviewManager.StopPreview();
+        }
+
         private static Mesh CreateStripMesh()
         {
             var mesh = new Mesh();
