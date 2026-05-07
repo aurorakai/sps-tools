@@ -104,8 +104,8 @@ namespace AuroraKai.SPSTools
             = new Dictionary<GameObject, bool>();
 
         // Overlays auto-hidden because they hadn't been baked yet - restored on preview end.
-        private readonly Dictionary<TrackedMesh, bool> previewHideSnapshots
-            = new Dictionary<TrackedMesh, bool>();
+        private readonly HashSet<TrackedMesh> previewHideSnapshots
+            = new HashSet<TrackedMesh>();
 
         // =====================================================================
         // Abstract / virtual members -- subclasses must or may override
@@ -2213,7 +2213,7 @@ namespace AuroraKai.SPSTools
                 if (!r.enabled) continue;  // already hidden via component
 
                 Undo.RecordObject(r, "SPS Preview Hide Ungenerated");
-                previewHideSnapshots[entry] = r.enabled;
+                previewHideSnapshots.Add(entry);
                 r.enabled = false;
             }
         }
@@ -2253,10 +2253,12 @@ namespace AuroraKai.SPSTools
                 }
 
                 // Restore renderer.enabled for auto-hidden ungenerated overlays.
-                foreach (var kv in previewHideSnapshots)
+                // Captured set only contains entries whose renderer was enabled at
+                // hide-time (we early-out otherwise), so restoration is unconditional true.
+                foreach (var entry in previewHideSnapshots)
                 {
-                    var r = ResolveAdditionalRenderer(kv.Key);
-                    if (r != null) r.enabled = kv.Value;
+                    var r = ResolveAdditionalRenderer(entry);
+                    if (r != null) r.enabled = true;
                 }
             }
             finally
