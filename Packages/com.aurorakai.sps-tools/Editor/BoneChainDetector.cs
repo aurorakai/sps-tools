@@ -90,14 +90,13 @@ namespace AuroraKai.SPSTools
             Transform current = seed;
             var ordered = new List<Transform>();
 
-            // Walk up to find the start of the chain
+            // Walk up to find the start of the chain. Don't break on a non-candidate
+            // ancestor — helper bones (twist, constraint helpers) can sit between two
+            // valid chain bones; the chain itself only includes the candidates.
             while (current != null && current != avatarRoot)
             {
                 if (candidateSet.Contains(current))
                     ordered.Insert(0, current);
-
-                if (!candidateSet.Contains(current.parent))
-                    break;
                 current = current.parent;
             }
 
