@@ -783,7 +783,10 @@ namespace AuroraKai.SPSTools
                             }
                             MeshReferenceTracker.StoreMesh(config, "original", null);
                             MeshReferenceTracker.StoreMesh(config, "generated", null);
-                            config.positionBlendshapes.Clear();
+                            // Only clear position-blendshape names if we're in Auto-Generate mode —
+                            // in Manual Entry the user typed those names and they belong to them.
+                            if (blendshapeAutoGenerate)
+                                config.positionBlendshapes.Clear();
                         }
                     }
                     else
