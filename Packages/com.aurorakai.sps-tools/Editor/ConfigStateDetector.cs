@@ -1,4 +1,5 @@
 using System.IO;
+using UnityEngine;
 
 namespace AuroraKai.SPSTools
 {
@@ -44,7 +45,14 @@ namespace AuroraKai.SPSTools
                 return ConfigState.New;
 
             string diskStem = Path.GetFileNameWithoutExtension(savedPath);
-            if (diskStem != expectedAssetStem)
+            // Filesystem case sensitivity differs by OS. Use ordinal-ignore-case on
+            // Windows/macOS (the supported Unity hosts) so a case-only rename
+            // doesn't trigger a destructive Save (DeleteAsset/CreateAsset race).
+            var comparison = (Application.platform == RuntimePlatform.WindowsEditor
+                              || Application.platform == RuntimePlatform.OSXEditor)
+                ? System.StringComparison.OrdinalIgnoreCase
+                : System.StringComparison.Ordinal;
+            if (!string.Equals(diskStem, expectedAssetStem, comparison))
                 return ConfigState.Renamed;
 
             if (currentConfigJson != lastSavedJson)
