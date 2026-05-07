@@ -996,10 +996,18 @@ namespace AuroraKai.SPSTools
                 if (m > maxMag) maxMag = m;
             }
 
-            // Only normalize if the peak is at least 10% of target.
-            // If smoothing crushed it below that, the data is too degraded
-            // to rescale safely (would amplify noise/spikes).
-            if (maxMag < targetMag * 0.1f) return;
+            // If smoothing crushed it below 10% of target, the data is too degraded
+            // to rescale safely (would amplify noise/spikes). Warn so the user
+            // knows their blendshape will be near-invisible — likely they should
+            // reduce smoothing passes or increase displacement.
+            if (maxMag < targetMag * 0.1f)
+            {
+                Debug.LogWarning(
+                    $"[SPS Effects] Smoothing crushed blendshape peak to {maxMag:F4}m " +
+                    $"(target {targetMag:F4}m). Resulting blendshape will be near-invisible. " +
+                    "Reduce smoothing passes or increase displacement.");
+                return;
+            }
             if (Mathf.Approximately(maxMag, targetMag)) return;
 
             float scale = targetMag / maxMag;
