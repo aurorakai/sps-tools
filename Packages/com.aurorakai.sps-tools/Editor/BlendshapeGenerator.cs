@@ -883,9 +883,9 @@ namespace AuroraKai.SPSTools
         /// </summary>
         private static long QuantizePosition(Vector3 pos)
         {
-            long x = (long)(pos.x * 10000f);
-            long y = (long)(pos.y * 10000f);
-            long z = (long)(pos.z * 10000f);
+            long x = (long)System.Math.Round(pos.x * 10000.0);
+            long y = (long)System.Math.Round(pos.y * 10000.0);
+            long z = (long)System.Math.Round(pos.z * 10000.0);
             return x * 73856093L ^ y * 19349663L ^ z * 83492791L;
         }
 
