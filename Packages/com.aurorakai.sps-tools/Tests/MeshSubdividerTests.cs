@@ -42,7 +42,7 @@ namespace AuroraKai.SPSTools.Tests
             try
             {
                 var result = MeshSubdivider.SubdivideInRegion(
-                    mesh, path, root.transform, root.transform, 1);
+                    mesh, path, root.transform, root.transform, passes: 1);
 
                 // 1 triangle → 4 triangles = 12 indices
                 Assert.AreEqual(12, result.GetTriangles(0).Length);
@@ -71,7 +71,7 @@ namespace AuroraKai.SPSTools.Tests
             try
             {
                 var result = MeshSubdivider.SubdivideInRegion(
-                    mesh, path, root.transform, root.transform, 1);
+                    mesh, path, root.transform, root.transform, passes: 1);
 
                 // No vertices affected — mesh unchanged
                 Assert.AreEqual(3, result.GetTriangles(0).Length);
@@ -98,7 +98,7 @@ namespace AuroraKai.SPSTools.Tests
             try
             {
                 var result = MeshSubdivider.SubdivideInRegion(
-                    mesh, path, root.transform, root.transform, 2);
+                    mesh, path, root.transform, root.transform, passes: 2);
 
                 // 1 → 4 → 16 triangles
                 Assert.AreEqual(48, result.GetTriangles(0).Length);
@@ -124,7 +124,7 @@ namespace AuroraKai.SPSTools.Tests
             try
             {
                 var result = MeshSubdivider.SubdivideInRegion(
-                    mesh, path, root.transform, root.transform, 1);
+                    mesh, path, root.transform, root.transform, passes: 1);
 
                 Assert.IsNotNull(result.normals);
                 Assert.AreEqual(result.vertexCount, result.normals.Length);
@@ -156,7 +156,7 @@ namespace AuroraKai.SPSTools.Tests
             try
             {
                 var result = MeshSubdivider.SubdivideInRegion(
-                    mesh, path, root.transform, root.transform, 1);
+                    mesh, path, root.transform, root.transform, passes: 1);
 
                 Assert.IsNotNull(result.uv);
                 Assert.AreEqual(result.vertexCount, result.uv.Length);
@@ -173,6 +173,68 @@ namespace AuroraKai.SPSTools.Tests
             finally
             {
                 Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void SubdivideInRegion_RespectsBakedSkinningWhenWorldRefsProvided()
+        {
+            // Build a strip skinned to a single bone. Pose the bone away from
+            // bind. The path overlaps the POSED location; subdivision must
+            // happen there, not at the bind-pose location.
+            var avatar = new GameObject("Avatar");
+            var bone = new GameObject("Bone");
+            bone.transform.SetParent(avatar.transform, false);
+            bone.transform.localPosition = new Vector3(2f, 0f, 0f);
+
+            var mesh = new Mesh();
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, -0.05f, 0f), new Vector3(0f, 0.05f, 0f),
+                new Vector3(1f, -0.05f, 0f), new Vector3(1f, 0.05f, 0f),
+            };
+            mesh.normals = new[] { Vector3.back, Vector3.back, Vector3.back, Vector3.back };
+            mesh.triangles = new[] { 0, 1, 2, 1, 3, 2 };
+            mesh.boneWeights = new[]
+            {
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+            };
+            mesh.bindposes = new[] { Matrix4x4.identity };
+            mesh.RecalculateBounds();
+
+            var rendererGo = new GameObject("Body");
+            rendererGo.transform.SetParent(avatar.transform, false);
+            var smr = rendererGo.AddComponent<SkinnedMeshRenderer>();
+            smr.sharedMesh = mesh;
+            smr.bones = new[] { bone.transform };
+            smr.rootBone = bone.transform;
+
+            // Path overlaps the posed location (x ≈ 2..3 in world space).
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = new Vector3(2f, 0f, 0f), localNormal = Vector3.back, radius = 0.5f },
+                new PathWaypoint { localPosition = new Vector3(3f, 0f, 0f), localNormal = Vector3.back, radius = 0.5f },
+            };
+
+            try
+            {
+                var worldRefs = BlendshapeGenerator.GetSkinnedWorldRefVerts(smr, mesh.vertices);
+
+                var subdivided = MeshSubdivider.SubdivideInRegion(
+                    mesh, path, smr.transform, avatar.transform,
+                    worldRefVerts: worldRefs,
+                    passes: 1);
+
+                Assert.Greater(subdivided.vertexCount, mesh.vertexCount,
+                    "Subdivision must happen at the posed location, not bind-pose.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(mesh);
             }
         }
     }

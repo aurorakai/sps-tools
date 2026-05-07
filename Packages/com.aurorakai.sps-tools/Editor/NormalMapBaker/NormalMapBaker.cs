@@ -56,7 +56,7 @@ namespace AuroraKai.SPSTools
                 {
                     workMesh = MeshSubdivider.SubdivideInRegion(
                         workMesh, inputs.path, primary.transform, avatarRoot,
-                        settings.referenceSubdivision);
+                        passes: settings.referenceSubdivision);
                     workMesh.hideFlags = HideFlags.HideAndDontSave;
                 }
 

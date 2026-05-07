@@ -201,8 +201,13 @@ namespace AuroraKai.SPSTools
             try
             {
                 if (subdivide && subdivisionPasses > 0)
+                {
+                    var preSubdivWorldRefs = GetSkinnedWorldRefVerts(renderer, mesh.vertices);
                     mesh = MeshSubdivider.SubdivideInRegion(
-                        mesh, path, renderer.transform, avatarRoot, subdivisionPasses);
+                        mesh, path, renderer.transform, avatarRoot,
+                        worldRefVerts: preSubdivWorldRefs,
+                        passes: subdivisionPasses);
+                }
 
                 EditorUtility.DisplayProgressBar("Generating Bulge Blendshapes", "Computing surface distances...", 0.1f);
 
@@ -1261,8 +1266,13 @@ namespace AuroraKai.SPSTools
             try
             {
                 if (subdivide && subdivisionPasses > 0)
+                {
+                    var preSubdivWorldRefs = GetSkinnedWorldRefVerts(overlayRenderer, mesh.vertices);
                     mesh = MeshSubdivider.SubdivideInRegion(
-                        mesh, path, overlayRenderer.transform, avatarRoot, subdivisionPasses);
+                        mesh, path, overlayRenderer.transform, avatarRoot,
+                        worldRefVerts: preSubdivWorldRefs,
+                        passes: subdivisionPasses);
+                }
 
                 var vertices = mesh.vertices;
                 // Authored per-vert base normals for both meshes — needed so the

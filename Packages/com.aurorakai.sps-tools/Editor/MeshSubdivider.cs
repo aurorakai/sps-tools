@@ -22,14 +22,21 @@ namespace AuroraKai.SPSTools
         public static Mesh SubdivideInRegion(
             Mesh sourceMesh, List<PathWaypoint> path,
             Transform meshTransform, Transform avatarRoot,
+            Vector3[] worldRefVerts = null,
             int passes = 1)
         {
             var mesh = Object.Instantiate(sourceMesh);
+            var refs = worldRefVerts;
 
             for (int pass = 0; pass < passes; pass++)
             {
                 EditorUtility.DisplayProgressBar("Subdividing Mesh", $"Pass {pass+1}/{passes}...", (float)pass / passes);
-                mesh = SubdividePass(mesh, path, meshTransform, avatarRoot);
+                mesh = SubdividePass(mesh, path, meshTransform, avatarRoot, refs);
+                // After pass 0 the vert count grew; refs only describe the input mesh,
+                // so we drop them and fall back to bind-pose-of-subdivided-mesh for
+                // subsequent passes (the affected band is already a superset by virtue
+                // of pass 0 having expanded it).
+                refs = null;
             }
 
             return mesh;
@@ -37,7 +44,8 @@ namespace AuroraKai.SPSTools
 
         private static Mesh SubdividePass(
             Mesh mesh, List<PathWaypoint> path,
-            Transform meshTransform, Transform avatarRoot)
+            Transform meshTransform, Transform avatarRoot,
+            Vector3[] worldRefVerts)
         {
             var vertices = mesh.vertices;
             var normals = mesh.normals;
@@ -62,9 +70,12 @@ namespace AuroraKai.SPSTools
 
             // Mark which vertices are inside the tube (with some margin)
             var isAffected = new bool[vertCount];
+            bool useWorldRefs = worldRefVerts != null && worldRefVerts.Length == vertCount;
             for (int v = 0; v < vertCount; v++)
             {
-                Vector3 worldVert = meshTransform.TransformPoint(vertices[v]);
+                Vector3 worldVert = useWorldRefs
+                    ? worldRefVerts[v]
+                    : meshTransform.TransformPoint(vertices[v]);
                 Vector3 localVert = avatarRoot.InverseTransformPoint(worldVert);
                 float dist = tube.DistanceToTube(localVert, out float radius);
                 // Include vertices slightly outside the tube to ensure clean borders
