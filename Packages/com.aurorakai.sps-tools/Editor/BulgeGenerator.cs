@@ -105,7 +105,7 @@ namespace AuroraKai.SPSTools
 
             // Rest before range
             entries.Add((0f, restClip));
-            if (rangeStart > 0.001f)
+            if (rangeStart > FullRangeEpsilon)
                 entries.Add((rangeStart, restClip));
 
             // First position is inset from range start (smooth ramp-in from rest)
