@@ -142,7 +142,8 @@ namespace AuroraKai.SPSTools
             bool recalculateNormals = true,
             float normalFalloffSoftness = 1f,
             int normalSmoothingPasses = 0,
-            int normalBoundaryRings = 1)
+            int normalBoundaryRings = 1,
+            float overlayMatchDistance = 0.02f)
         {
             var results = new List<BlendshapeResult>();
             if (renderers == null || renderers.Count == 0) return results;
@@ -173,7 +174,8 @@ namespace AuroraKai.SPSTools
                     renderers[i], renderers[0], avatarRoot, path,
                     primaryDeltasByName, primaryWorldVerts, searchablePrimaryIndices,
                     outputFolder, "SPSBulge_GeneratedMesh" + suffix,
-                    subdivide, subdivisionPasses, recalculateNormals);
+                    subdivide, subdivisionPasses, recalculateNormals,
+                    overlayMatchDistance);
                 results.Add(overlay);
             }
             return results;
@@ -1275,7 +1277,8 @@ namespace AuroraKai.SPSTools
             string meshAssetName,
             bool subdivide,
             int subdivisionPasses,
-            bool recalculateNormals)
+            bool recalculateNormals,
+            float overlayMatchDistance)
         {
             var mesh = CopyMesh(overlayRenderer);
             try
@@ -1310,7 +1313,7 @@ namespace AuroraKai.SPSTools
                 // instead of inheriting a neighbor's non-zero delta.
                 // KDTree over the searchable subset turns the per-overlay-vert
                 // lookup from O(|searchable|) linear to O(log |searchable|).
-                const float matchThresholdSq = 0.02f * 0.02f;
+                float matchThresholdSq = overlayMatchDistance * overlayMatchDistance;
                 var searchablePoints = new Vector3[searchablePrimaryIndices.Count];
                 for (int i = 0; i < searchablePrimaryIndices.Count; i++)
                     searchablePoints[i] = primaryWorldVerts[searchablePrimaryIndices[i]];

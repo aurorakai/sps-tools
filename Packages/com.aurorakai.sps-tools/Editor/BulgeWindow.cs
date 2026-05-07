@@ -639,6 +639,12 @@ namespace AuroraKai.SPSTools
                         EditorGUI.indentLevel--;
                     }
 
+                    config.overlayMatchDistance = EditorGUILayout.Slider(
+                        new GUIContent("Overlay Match Distance",
+                            "Max distance (m) for an overlay vert to inherit primary deltas. " +
+                            "Increase for non-meter-scale avatars."),
+                        config.overlayMatchDistance, 0.001f, 0.2f);
+
                     EditorGUI.indentLevel--;
                 }
 
@@ -718,7 +724,8 @@ namespace AuroraKai.SPSTools
                             config.subdivideAffectedRegion, config.subdivisionPasses,
                             config.recalculateNormals,
                             config.normalFalloffSoftness, config.normalSmoothingPasses,
-                            config.normalBoundaryRings);
+                            config.normalBoundaryRings,
+                            config.overlayMatchDistance);
 
                         // Store per-mesh results via tracker
                         for (int i = 0; i < results.Count; i++)

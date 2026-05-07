@@ -27,6 +27,10 @@ namespace AuroraKai.SPSTools
         // Blendshape mode (auto-generate)
         public int autoPositionCount = 5;
 
+        [Tooltip("Maximum world-space distance (m) for an overlay vertex to inherit deltas from a primary vertex. Default 0.02 (2 cm) is appropriate for meter-scale avatars.")]
+        [Range(0.001f, 0.2f)]
+        public float overlayMatchDistance = 0.02f;
+
         /// <summary>
         /// Returns the number of positions based on the current deformation mode.
         /// </summary>
