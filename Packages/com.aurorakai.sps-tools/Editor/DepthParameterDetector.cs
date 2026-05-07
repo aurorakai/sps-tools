@@ -263,92 +263,93 @@ namespace AuroraKai.SPSTools
 
             ResolveTypes();
 
-            if (s_fxFloatActionType == null)
-            {
-                Debug.LogError("[SPS Effects] Could not find FxFloatAction type.");
-                return false;
-            }
-            if (s_depthActionNewType == null)
-            {
-                Debug.LogError("[SPS Effects] Could not determine DepthActionNew type.");
-                return false;
-            }
-
-            // Build the depth action + state + action object graph in plain C#
-            // first; we commit it to the SerializedObject at the end so undo
-            // is captured as a real SerializedProperty diff.
-            object depthAction;
             try
             {
-                depthAction = Activator.CreateInstance(s_depthActionNewType);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[SPS Effects] Failed to instantiate DepthActionNew: {e.Message}");
-                return false;
-            }
+                Undo.RecordObject(socketComponent, "Add SPS Depth FX Float");
 
-            bool configuredPlugs = false;
-            if (s_unitsPlugsValue != null &&
-                SetFieldIfExists(depthAction, "units", s_unitsPlugsValue))
-            {
-                SetFieldIfExists(depthAction, "range", new Vector2(-1f, 0f));
-                configuredPlugs = true;
-            }
-            if (!configuredPlugs)
-            {
-                Debug.LogWarning("[SPS Effects] DepthActionUnits.Plugs not available; " +
-                    "socket depth action will use VRCFury defaults. You may need to adjust " +
-                    "the activation distance manually in the socket inspector.");
-            }
-            SetFieldIfExists(depthAction, "enableSelf", true);
-            SetFieldIfExists(depthAction, "smoothingSeconds", 0f);
+                // Get the depthActions2 list
+                object actionsList = GetFieldValueRecursive(socketComponent, "depthActions2");
 
-            // actionSet (State) + actions list with the FxFloatAction
-            object state = GetFieldValueRecursive(depthAction, "actionSet");
-            if (state == null && s_stateType != null)
-            {
-                state = Activator.CreateInstance(s_stateType);
-                SetFieldIfExists(depthAction, "actionSet", state);
-            }
-            if (state == null)
-            {
-                Debug.LogError("[SPS Effects] Could not access or create State for depth action.");
-                return false;
-            }
-
-            object stateActions = GetFieldValueRecursive(state, "actions");
-            if (!(stateActions is IList stateActionsList))
-            {
-                Debug.LogError("[SPS Effects] Could not access State.actions list.");
-                return false;
-            }
-
-            object fxFloat = Activator.CreateInstance(s_fxFloatActionType);
-            SetFieldIfExists(fxFloat, "name", parameterName);
-            SetFieldIfExists(fxFloat, "value", 1f);
-            stateActionsList.Add(fxFloat);
-
-            // Now commit the depth action onto the component via SerializedObject so
-            // Unity records a proper undo delta and any other open SerializedObject
-            // on this component sees the same final state.
-            var so = new SerializedObject(socketComponent);
-            try
-            {
-                var depthActionsProp = so.FindProperty("depthActions2");
-                if (depthActionsProp == null || !depthActionsProp.isArray)
+                if (!(actionsList is IList list))
                 {
-                    Debug.LogError("[SPS Effects] Could not find depthActions2 SerializedProperty.");
+                    Debug.LogError("[SPS Effects] Could not find depthActions2 field. " +
+                        "Use Debug Properties to inspect the socket structure.");
                     return false;
                 }
 
-                int newIdx = depthActionsProp.arraySize;
-                depthActionsProp.InsertArrayElementAtIndex(newIdx);
-                var newEntry = depthActionsProp.GetArrayElementAtIndex(newIdx);
+                // Create DepthActionNew instance
+                Type depthActionType = s_depthActionNewType;
+                if (depthActionType == null)
+                {
+                    // Infer from list element type
+                    depthActionType = GetListElementType(actionsList.GetType());
+                }
+                if (depthActionType == null)
+                {
+                    Debug.LogError("[SPS Effects] Could not determine DepthActionNew type.");
+                    return false;
+                }
 
-                CopyFieldsViaSerializedProperty(depthAction, newEntry);
+                object depthAction = Activator.CreateInstance(depthActionType);
 
-                so.ApplyModifiedProperties();
+                // VRCFury's defaults are range=(-0.25, 0) in Meters — scale-dependent,
+                // so a short plug saturates the FX param before reaching 1.0. Prefer
+                // Plugs units with range (-1, 0): the parameter sweeps 0→1 across the
+                // plug's full insertion depth regardless of plug size. Fall back to
+                // VRCFury's defaults on older versions where Plugs isn't defined.
+                bool configuredPlugs = false;
+                if (s_unitsPlugsValue != null &&
+                    SetFieldIfExists(depthAction, "units", s_unitsPlugsValue))
+                {
+                    SetFieldIfExists(depthAction, "range", new Vector2(-1f, 0f));
+                    configuredPlugs = true;
+                }
+                if (!configuredPlugs)
+                {
+                    Debug.LogWarning("[SPS Effects] DepthActionUnits.Plugs not available; " +
+                        "socket depth action will use VRCFury defaults. You may need to adjust " +
+                        "the activation distance manually in the socket inspector.");
+                }
+                SetFieldIfExists(depthAction, "enableSelf", true);
+                SetFieldIfExists(depthAction, "smoothingSeconds", 0f);
+
+                // Get or create the actionSet (State)
+                object state = GetFieldValueRecursive(depthAction, "actionSet");
+                if (state == null && s_stateType != null)
+                {
+                    state = Activator.CreateInstance(s_stateType);
+                    SetFieldIfExists(depthAction, "actionSet", state);
+                }
+                if (state == null)
+                {
+                    Debug.LogError("[SPS Effects] Could not access or create State for depth action.");
+                    return false;
+                }
+
+                // Get or create the actions list inside State
+                object stateActions = GetFieldValueRecursive(state, "actions");
+                if (!(stateActions is IList stateActionsList))
+                {
+                    Debug.LogError("[SPS Effects] Could not access State.actions list.");
+                    return false;
+                }
+
+                // Create FxFloatAction
+                if (s_fxFloatActionType == null)
+                {
+                    Debug.LogError("[SPS Effects] Could not find FxFloatAction type.");
+                    return false;
+                }
+
+                object fxFloat = Activator.CreateInstance(s_fxFloatActionType);
+                SetFieldIfExists(fxFloat, "name", parameterName);
+                SetFieldIfExists(fxFloat, "value", 1f);
+
+                // Wire it all up
+                stateActionsList.Add(fxFloat);
+                list.Add(depthAction);
+
+                EditorUtility.SetDirty(socketComponent);
 
                 if (!Application.isPlaying)
                     UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
@@ -365,49 +366,6 @@ namespace AuroraKai.SPSTools
             {
                 Debug.LogError($"[SPS Effects] Failed to add FX Float to socket: {e.Message}\n{e.StackTrace}");
                 return false;
-            }
-            finally
-            {
-                so.Dispose();
-            }
-        }
-
-        /// <summary>
-        /// Best-effort copy of a managed object's fields into a SerializedProperty
-        /// of a [Serializable] struct. Recurses into nested SerializedReference
-        /// fields (State, FxFloatAction) so the inserted array element matches
-        /// the in-memory graph.
-        /// </summary>
-        private static void CopyFieldsViaSerializedProperty(object src, SerializedProperty dst)
-        {
-            if (src == null) return;
-            var type = src.GetType();
-            var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            foreach (var f in fields)
-            {
-                var prop = dst.FindPropertyRelative(f.Name);
-                if (prop == null) continue;
-
-                object val = f.GetValue(src);
-                switch (prop.propertyType)
-                {
-                    case SerializedPropertyType.Boolean: prop.boolValue = (bool)(val ?? false); break;
-                    case SerializedPropertyType.Float:   prop.floatValue = System.Convert.ToSingle(val ?? 0f); break;
-                    case SerializedPropertyType.Integer: prop.intValue = System.Convert.ToInt32(val ?? 0); break;
-                    case SerializedPropertyType.String:  prop.stringValue = val as string ?? ""; break;
-                    case SerializedPropertyType.Enum:
-                        if (val != null) prop.enumValueIndex = System.Convert.ToInt32(val);
-                        break;
-                    case SerializedPropertyType.Vector2:
-                        if (val is Vector2 v2) prop.vector2Value = v2; break;
-                    case SerializedPropertyType.ManagedReference:
-                        if (val != null) prop.managedReferenceValue = val;
-                        break;
-                    case SerializedPropertyType.Generic:
-                        // Nested struct (e.g. State) — recurse.
-                        if (val != null) CopyFieldsViaSerializedProperty(val, prop);
-                        break;
-                }
             }
         }
 
