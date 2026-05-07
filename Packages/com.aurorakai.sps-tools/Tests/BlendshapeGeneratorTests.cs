@@ -237,5 +237,75 @@ namespace AuroraKai.SPSTools.Tests
                 Object.DestroyImmediate(root);
             }
         }
+
+        [Test]
+        public void GenerateBulgeBlendshapes_WithSubdivisionAndPosedRenderer_DeformsAtPosedLocation()
+        {
+            var avatar = new GameObject("Avatar");
+            var bone = new GameObject("Bone");
+            bone.transform.SetParent(avatar.transform, false);
+            bone.transform.localPosition = new Vector3(2f, 0f, 0f);
+
+            var mesh = new Mesh();
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, -0.05f, 0f), new Vector3(0f, 0.05f, 0f),
+                new Vector3(1f, -0.05f, 0f), new Vector3(1f, 0.05f, 0f),
+            };
+            mesh.normals = new[] { Vector3.back, Vector3.back, Vector3.back, Vector3.back };
+            mesh.triangles = new[] { 0, 1, 2, 1, 3, 2 };
+            mesh.boneWeights = new[]
+            {
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1f },
+            };
+            mesh.bindposes = new[] { Matrix4x4.identity };
+            mesh.RecalculateBounds();
+
+            var rendererGo = new GameObject("Body");
+            rendererGo.transform.SetParent(avatar.transform, false);
+            var smr = rendererGo.AddComponent<SkinnedMeshRenderer>();
+            smr.sharedMesh = mesh;
+            smr.bones = new[] { bone.transform };
+            smr.rootBone = bone.transform;
+
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = new Vector3(2f, 0f, 0f), localNormal = Vector3.back, radius = 0.5f },
+                new PathWaypoint { localPosition = new Vector3(3f, 0f, 0f), localNormal = Vector3.back, radius = 0.5f },
+            };
+
+            string folder = "Assets/SPSTools/Test/SubdivisionPosedRegression";
+            try
+            {
+                var result = BlendshapeGenerator.GenerateBulgeBlendshapes(
+                    smr, avatar.transform, path,
+                    positionCount: 1, displacement: 0.05f,
+                    outputFolder: folder,
+                    smoothingPasses: 0,
+                    subdivide: true, subdivisionPasses: 1,
+                    recalculateNormals: false);
+
+                Assert.Greater(result.modifiedMesh.vertexCount, 4,
+                    "Subdivision must happen at posed location.");
+
+                int idx = result.modifiedMesh.GetBlendShapeIndex(result.blendshapeNames[0]);
+                var dv = new Vector3[result.modifiedMesh.vertexCount];
+                result.modifiedMesh.GetBlendShapeFrameVertices(idx, 0, dv, null, null);
+                bool anyNonzero = false;
+                foreach (var d in dv)
+                    if (d.sqrMagnitude > 1e-10f) { anyNonzero = true; break; }
+                Assert.IsTrue(anyNonzero,
+                    "Generator must produce deltas; if BakeMesh fell into bind-pose fallback the path missed all verts.");
+            }
+            finally
+            {
+                UnityEditor.AssetDatabase.DeleteAsset(folder);
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(mesh);
+            }
+        }
     }
 }

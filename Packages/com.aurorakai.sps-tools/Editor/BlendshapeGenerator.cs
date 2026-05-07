@@ -207,6 +207,13 @@ namespace AuroraKai.SPSTools
                         mesh, path, renderer.transform, avatarRoot,
                         worldRefVerts: preSubdivWorldRefs,
                         passes: subdivisionPasses);
+                    // BakeMesh on the renderer needs to see the subdivided mesh so its
+                    // baked vertex count matches what we project against. Without this,
+                    // GetSkinnedWorldRefVerts silently falls into the bind-pose fallback,
+                    // which is wrong for any non-bind-pose avatar or bone-parented overlay.
+                    Undo.RecordObject(renderer, "Assign subdivided mesh");
+                    renderer.sharedMesh = mesh;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
                 }
 
                 EditorUtility.DisplayProgressBar("Generating Bulge Blendshapes", "Computing surface distances...", 0.1f);
@@ -1272,6 +1279,9 @@ namespace AuroraKai.SPSTools
                         mesh, path, overlayRenderer.transform, avatarRoot,
                         worldRefVerts: preSubdivWorldRefs,
                         passes: subdivisionPasses);
+                    Undo.RecordObject(overlayRenderer, "Assign subdivided mesh");
+                    overlayRenderer.sharedMesh = mesh;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(overlayRenderer);
                 }
 
                 var vertices = mesh.vertices;
