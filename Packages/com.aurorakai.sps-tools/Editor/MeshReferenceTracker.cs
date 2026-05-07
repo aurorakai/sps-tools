@@ -21,16 +21,21 @@ namespace AuroraKai.SPSTools
         public static void StoreMesh(BaseEffectConfig config, string field, Mesh mesh)
         {
             string path = (mesh != null) ? AssetDatabase.GetAssetPath(mesh) : "";
+            string guid = !string.IsNullOrEmpty(path)
+                ? AssetDatabase.AssetPathToGUID(path)
+                : "";
 
             if (field == "original")
             {
                 config.originalMesh = mesh;
                 config.originalMeshPath = path;
+                config.originalMeshGuid = guid;
             }
             else if (field == "generated")
             {
                 config.generatedMesh = mesh;
                 config.generatedMeshPath = path;
+                config.generatedMeshGuid = guid;
             }
             else
             {
@@ -49,16 +54,19 @@ namespace AuroraKai.SPSTools
         {
             Mesh mesh;
             string path;
+            string storedGuid;
 
             if (field == "original")
             {
                 mesh = config.originalMesh;
                 path = config.originalMeshPath;
+                storedGuid = config.originalMeshGuid;
             }
             else if (field == "generated")
             {
                 mesh = config.generatedMesh;
                 path = config.generatedMeshPath;
+                storedGuid = config.generatedMeshGuid;
             }
             else
             {
@@ -73,6 +81,15 @@ namespace AuroraKai.SPSTools
             // Reference is null (or fake-null). Try to reload from the stored path.
             if (!string.IsNullOrEmpty(path))
             {
+                // GUID validation: don't heal to a mesh that's been swapped out at
+                // the same path. If the GUID was never recorded (legacy data), accept.
+                if (!string.IsNullOrEmpty(storedGuid))
+                {
+                    string currentGuid = AssetDatabase.AssetPathToGUID(path);
+                    if (currentGuid != storedGuid)
+                        return null;
+                }
+
                 var reloaded = AssetDatabase.LoadAssetAtPath<Mesh>(path);
                 if (reloaded != null)
                 {
@@ -103,16 +120,21 @@ namespace AuroraKai.SPSTools
         {
             if (entry == null) return;
             string path = (mesh != null) ? AssetDatabase.GetAssetPath(mesh) : "";
+            string guid = !string.IsNullOrEmpty(path)
+                ? AssetDatabase.AssetPathToGUID(path)
+                : "";
 
             if (field == "original")
             {
                 entry.originalMesh = mesh;
                 entry.originalMeshPath = path;
+                entry.originalMeshGuid = guid;
             }
             else if (field == "generated")
             {
                 entry.generatedMesh = mesh;
                 entry.generatedMeshPath = path;
+                entry.generatedMeshGuid = guid;
             }
             else
             {
@@ -130,15 +152,18 @@ namespace AuroraKai.SPSTools
 
             Mesh mesh;
             string path;
+            string storedGuid;
             if (field == "original")
             {
                 mesh = entry.originalMesh;
                 path = entry.originalMeshPath;
+                storedGuid = entry.originalMeshGuid;
             }
             else if (field == "generated")
             {
                 mesh = entry.generatedMesh;
                 path = entry.generatedMeshPath;
+                storedGuid = entry.generatedMeshGuid;
             }
             else
             {
@@ -150,6 +175,15 @@ namespace AuroraKai.SPSTools
 
             if (!string.IsNullOrEmpty(path))
             {
+                // GUID validation: don't heal to a mesh that's been swapped out at
+                // the same path. If the GUID was never recorded (legacy data), accept.
+                if (!string.IsNullOrEmpty(storedGuid))
+                {
+                    string currentGuid = AssetDatabase.AssetPathToGUID(path);
+                    if (currentGuid != storedGuid)
+                        return null;
+                }
+
                 var reloaded = AssetDatabase.LoadAssetAtPath<Mesh>(path);
                 if (reloaded != null)
                 {

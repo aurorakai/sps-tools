@@ -47,8 +47,10 @@ namespace AuroraKai.SPSTools
         public string rendererPath;
         public Mesh originalMesh;
         public string originalMeshPath = "";
+        public string originalMeshGuid = "";
         public Mesh generatedMesh;
         public string generatedMeshPath = "";
+        public string generatedMeshGuid = "";
     }
 
     public abstract class BaseEffectConfig : ScriptableObject
@@ -110,8 +112,10 @@ namespace AuroraKai.SPSTools
         // Non-destructive mesh handling (primary mesh)
         public Mesh originalMesh;    // pre-modification mesh (for restore)
         public string originalMeshPath = "";
+        public string originalMeshGuid = "";
         public Mesh generatedMesh;   // generated mesh with added blendshapes
         public string generatedMeshPath = "";
+        public string generatedMeshGuid = "";
 
         // Additional meshes that receive matching blendshapes (e.g. clothing overlays)
         public List<TrackedMesh> additionalMeshes = new List<TrackedMesh>();

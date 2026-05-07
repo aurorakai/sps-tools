@@ -138,5 +138,41 @@ namespace AuroraKai.SPSTools.Tests
                 Object.DestroyImmediate(config);
             }
         }
+
+        [Test]
+        public void ResolveMesh_DoesNotHealToReplacementAssetAtSamePath()
+        {
+            string folder = "Assets/SPSTools/Test/GuidValidation";
+            if (!UnityEditor.AssetDatabase.IsValidFolder(folder))
+                SpsAnimationUtility.EnsureFolder(folder);
+
+            var meshA = new Mesh { name = "A" };
+            var meshB = new Mesh { name = "B" };
+            string path = folder + "/Stored.asset";
+
+            UnityEditor.AssetDatabase.CreateAsset(meshA, path);
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+
+            try
+            {
+                MeshReferenceTracker.StoreMesh(config, "original", meshA);
+
+                // Simulate fake-null on the C# ref
+                config.originalMesh = null;
+
+                // Replace the asset at the same path with a different mesh
+                UnityEditor.AssetDatabase.DeleteAsset(path);
+                UnityEditor.AssetDatabase.CreateAsset(meshB, path);
+
+                var resolved = MeshReferenceTracker.ResolveMesh(config, "original");
+                Assert.IsNull(resolved,
+                    "Resolve must NOT heal to a different mesh that was placed at the original path.");
+            }
+            finally
+            {
+                UnityEditor.AssetDatabase.DeleteAsset(folder);
+                Object.DestroyImmediate(config);
+            }
+        }
     }
 }
