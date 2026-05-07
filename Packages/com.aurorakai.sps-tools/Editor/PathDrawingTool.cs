@@ -14,6 +14,67 @@ namespace AuroraKai.SPSTools
     {
         public static bool IsDrawing { get; private set; }
 
+        // Domain reload sweeps every static reference; without this hook the owned
+        // hidden Material leaks ("Cleaning up leaked objects" in the console) and
+        // any scene-bound state from a session that was active across a reload
+        // would dangle as a stale GameObject/Transform/Mesh ref.
+        [InitializeOnLoadMethod]
+        private static void RegisterReloadCleanup()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload -= ReleaseStaticState;
+            AssemblyReloadEvents.beforeAssemblyReload += ReleaseStaticState;
+        }
+
+        private static void ReleaseStaticState()
+        {
+            // Unsubscribe per-frame hooks so a session that was live across the
+            // reload doesn't leave dangling delegates pointing at the old domain.
+            SceneView.duringSceneGui -= OnSceneGUI;
+            EditorApplication.update -= PumpRepaint;
+            IsDrawing = false;
+
+            // Owned Unity Object - explicit DestroyImmediate to suppress the
+            // editor leak warning.
+            if (s_vertexMaterial != null)
+                UnityEngine.Object.DestroyImmediate(s_vertexMaterial);
+            s_vertexMaterial = null;
+
+            // Scene/asset references - just drop them.
+            s_targetMesh = null;
+            s_avatarRoot = null;
+            s_snapCachedMesh = null;
+            s_affectedCachedMesh = null;
+
+            // Session state and callbacks.
+            s_waypoints = null;
+            s_onConfirm = null;
+            s_onCancel = null;
+
+            // Cached arrays / KD-tree backed by the above.
+            s_snapVertices = null;
+            s_snapNormals = null;
+            s_snapTree = null;
+            s_splinePoints = null;
+            s_cachedAffectedVerts = null;
+            s_cachedAffectedWeights = null;
+            s_cachedAffectedCount = 0;
+            s_affectedCachedVertices = null;
+
+            // GUIStyles bind to editor textures; force a rebuild after reload.
+            s_panelTitleStyle = null;
+            s_panelLabelStyle = null;
+            s_panelValueStyle = null;
+            s_panelStatsStyle = null;
+            s_hintBarStyle = null;
+            s_waypointNumStyle = null;
+            s_overlayLabelStyle = null;
+            s_stylesInitialized = false;
+
+            s_tempPositions.Clear();
+            s_tempNormals.Clear();
+            s_auxPositions.Clear();
+        }
+
         // Drawing state
         private static GameObject s_targetMesh;
         private static Transform s_avatarRoot;
