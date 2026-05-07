@@ -645,7 +645,7 @@ namespace AuroraKai.SPSTools
                 }
 
                 // Generate Blendshapes button (full width, separate)
-                GUI.enabled = hasPath && targetRenderer != null;
+                GUI.enabled = hasPath && targetRenderer != null && config.avatarRoot != null;
                 if (GUILayout.Button("Generate Blendshapes", GUILayout.Height(24)))
                 {
                     int extra = config.additionalMeshes != null ? config.additionalMeshes.Count : 0;
