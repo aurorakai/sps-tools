@@ -1450,11 +1450,25 @@ namespace AuroraKai.SPSTools
             if (!string.IsNullOrEmpty(folder))
                 SpsAnimationUtility.EnsureFolder(folder);
 
+            // Write to a temp path first, then atomically replace. If CreateAsset
+            // throws (disk full, locked path), the existing asset at `path` is
+            // untouched — callers that captured the previous mesh reference can
+            // still use it. Use ".tmp.asset" so Unity accepts the extension.
+            string tempPath = System.IO.Path.ChangeExtension(path, "tmp.asset");
+            if (AssetDatabase.LoadAssetAtPath<Mesh>(tempPath) != null)
+                AssetDatabase.DeleteAsset(tempPath);
+
+            AssetDatabase.CreateAsset(mesh, tempPath);
+
             var existing = AssetDatabase.LoadAssetAtPath<Mesh>(path);
             if (existing != null)
                 AssetDatabase.DeleteAsset(path);
 
-            AssetDatabase.CreateAsset(mesh, path);
+            string moveError = AssetDatabase.MoveAsset(tempPath, path);
+            if (!string.IsNullOrEmpty(moveError))
+                throw new System.IO.IOException(
+                    $"[SPS Effects] Failed to rename '{tempPath}' to '{path}': {moveError}");
+
             AssetDatabase.SaveAssets();
 
             Debug.Log($"[SPS Effects] Generated mesh saved: {path} " +
