@@ -962,10 +962,8 @@ namespace AuroraKai.SPSTools
                         if (!dup)
                         {
                             entry.rendererPath = GetRelativePath(config.avatarRoot.transform, picked.transform);
-                            entry.originalMesh = null;
-                            entry.originalMeshPath = "";
-                            entry.generatedMesh = null;
-                            entry.generatedMeshPath = "";
+                            MeshReferenceTracker.StoreMesh(entry, "original", null);
+                            MeshReferenceTracker.StoreMesh(entry, "generated", null);
                         }
                     }
                 }
