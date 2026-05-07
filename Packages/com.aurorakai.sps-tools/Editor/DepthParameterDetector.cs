@@ -265,7 +265,12 @@ namespace AuroraKai.SPSTools
 
             try
             {
-                Undo.RecordObject(socketComponent, "Add SPS Depth FX Float");
+                // RegisterCompleteObjectUndo does a deep clone snapshot of the component,
+                // which correctly captures [SerializeReference] list deltas — RecordObject's
+                // shallow snapshot can leave VRCFury's depthActions2 in malformed state on
+                // Ctrl+Z. Reflection-based mutation below is unchanged; only the undo
+                // strategy is upgraded.
+                Undo.RegisterCompleteObjectUndo(socketComponent, "Add SPS Depth FX Float");
 
                 // Get the depthActions2 list
                 object actionsList = GetFieldValueRecursive(socketComponent, "depthActions2");
