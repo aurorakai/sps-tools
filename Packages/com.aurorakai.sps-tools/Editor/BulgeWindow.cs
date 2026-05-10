@@ -84,10 +84,16 @@ namespace AuroraKai.SPSTools
             => BulgeGenerator.BuildPreviewThresholds(config);
 
         protected override string GenerateAssets()
-            => BulgeGenerator.Generate(config);
+        {
+            EnsureLegacyStackMigration();
+            return BulgeGenerator.Generate(config);
+        }
 
         protected override string GenerateAssetsMulti(List<string> depthParameters)
-            => BulgeGenerator.Generate(config, depthParameters);
+        {
+            EnsureLegacyStackMigration();
+            return BulgeGenerator.Generate(config, depthParameters);
+        }
 
         protected override int ComputePreviewConfigHash()
         {
@@ -137,12 +143,32 @@ namespace AuroraKai.SPSTools
             if (!base.CanPreview()) return false;
             if (config.EffectiveDeformationMode == DeformationMode.Blendshape)
             {
-                var genMesh = MeshReferenceTracker.ResolveMesh(config, "generated");
+                bool hasStackLayer = MeshStackService.HasBulgeLayer(config);
+                var genMesh = hasStackLayer
+                    ? MeshStackService.ResolveComposedMesh(config.avatarRoot, config.rendererPath)
+                    : MeshReferenceTracker.ResolveMesh(config, "generated");
                 bool hasBlendshapes = config.positionBlendshapes.Count >= 2 ||
                     (genMesh != null && genMesh.blendShapeCount > 0);
                 if (!hasBlendshapes) return false;
             }
             return true;
+        }
+
+        private void EnsureLegacyStackMigration()
+        {
+            if (config == null || config.avatarRoot == null)
+                return;
+            if (MeshStackService.HasBulgeLayer(config) ||
+                !MeshStackService.HasLegacyBulgeGeneration(config))
+                return;
+
+            if (string.IsNullOrEmpty(config.stableConfigId) && !SaveConfig())
+                throw new InvalidOperationException(
+                    "Could not save the existing configuration before mesh-stack migration.");
+
+            MeshStackService.RegisterLegacyBulgeGeneration(
+                config, GetTrackedConfigAssetPath());
+            SaveConfig();
         }
 
         protected override void ReconnectExtraReferences()
@@ -664,11 +690,6 @@ namespace AuroraKai.SPSTools
                         dialogMsg, "Continue", "Cancel"))
                         return;
 
-                    // Collect all participating renderers (primary + additionals)
-                    var renderers = new List<SkinnedMeshRenderer> { targetRenderer };
-                    var trackedEntries = new List<TrackedMesh> { null };  // null = primary
-                    var originalMeshes = new List<Mesh> { targetRenderer.sharedMesh };
-
                     if (targetRenderer.sharedMesh == null)
                     {
                         EditorUtility.DisplayDialog("SPS Bulge",
@@ -676,86 +697,32 @@ namespace AuroraKai.SPSTools
                         return;
                     }
 
-                    // Resolve primary original
-                    var storedPrimary = MeshReferenceTracker.ResolveMesh(config, "original");
-                    if (storedPrimary != null) originalMeshes[0] = storedPrimary;
-
-                    // Resolve additionals
-                    bool missingRenderer = false;
-                    if (config.additionalMeshes != null)
-                    {
-                        foreach (var entry in config.additionalMeshes)
-                        {
-                            var r = ResolveAdditionalRenderer(entry);
-                            if (r == null || r.sharedMesh == null)
-                            {
-                                missingRenderer = true;
-                                continue;
-                            }
-                            renderers.Add(r);
-                            trackedEntries.Add(entry);
-                            var storedAdd = MeshReferenceTracker.ResolveMesh(entry, "original");
-                            originalMeshes.Add(storedAdd != null ? storedAdd : r.sharedMesh);
-                        }
-                    }
-
-                    if (missingRenderer)
-                        Debug.LogWarning("[SPS Bulge] One or more additional meshes could not be resolved - skipped.");
-
                     Undo.SetCurrentGroupName("Generate Bulge Blendshapes");
                     int undoGroup = Undo.GetCurrentGroup();
 
                     try
                     {
-                        // Reset each renderer to its original before running
-                        for (int i = 0; i < renderers.Count; i++)
-                            renderers[i].sharedMesh = originalMeshes[i];
+                        if (!SaveConfig())
+                            return;
 
-                        string folder = SpsAnimationUtility.CreateOutputFolder(
-                            config.GetOutputFolder());
+                        var result = MeshStackService.GenerateOrUpdateBulge(
+                            config, GetTrackedConfigAssetPath());
+                        config.positionBlendshapes =
+                            new List<string>(result.primaryBlendshapeNames);
 
-                        var results = BlendshapeGenerator.GenerateBulgeBlendshapes(
-                            renderers, config.avatarRoot.transform,
-                            config.pathWaypoints,
-                            config.autoPositionCount,
-                            config.blendshapeDisplacement,
-                            folder, config.blendshapeNamingPattern,
-                            config.smoothingPasses,
-                            config.subdivideAffectedRegion, config.subdivisionPasses,
-                            config.recalculateNormals,
-                            config.normalFalloffSoftness, config.normalSmoothingPasses,
-                            config.normalBoundaryRings,
-                            config.overlayMatchDistance);
+                        if (!SaveConfig())
+                            return;
 
-                        // Store per-mesh results via tracker
-                        for (int i = 0; i < results.Count; i++)
-                        {
-                            if (trackedEntries[i] == null)
-                            {
-                                MeshReferenceTracker.StoreMesh(config, "original", originalMeshes[i]);
-                                MeshReferenceTracker.StoreMesh(config, "generated", results[i].modifiedMesh);
-                            }
-                            else
-                            {
-                                MeshReferenceTracker.StoreMesh(trackedEntries[i], "original", originalMeshes[i]);
-                                MeshReferenceTracker.StoreMesh(trackedEntries[i], "generated", results[i].modifiedMesh);
-                            }
-                        }
-                        config.positionBlendshapes = new List<string>(results[0].blendshapeNames);
-
-                        statusMessage = renderers.Count > 1
-                            ? $"Generated {results[0].blendshapeNames.Count} blendshapes on {renderers.Count} meshes."
-                            : $"Generated {results[0].blendshapeNames.Count} bulge blendshapes.";
+                        statusMessage = result.rendererCount > 1
+                            ? $"Generated {config.positionBlendshapes.Count} blendshapes across {result.rendererCount} stacked meshes."
+                            : $"Generated {config.positionBlendshapes.Count} stacked bulge blendshapes.";
                         statusType = MessageType.Info;
                         Repaint();
                         Undo.CollapseUndoOperations(undoGroup);
                     }
                     catch (System.Exception e)
                     {
-                        // Rollback - restore each renderer to its pre-generation state
-                        for (int i = 0; i < renderers.Count; i++)
-                            renderers[i].sharedMesh = originalMeshes[i];
-                        statusMessage = $"Blendshape generation failed, meshes restored: {e.Message}";
+                        statusMessage = $"Blendshape generation failed, mesh stack restored: {e.Message}";
                         statusType = MessageType.Error;
                         Debug.LogError($"[SPS Bulge] {statusMessage}");
                         Debug.LogException(e);
@@ -766,42 +733,70 @@ namespace AuroraKai.SPSTools
 
                 // Restore Original Mesh button - show whenever we have a record,
                 // so the user can always get back to the pre-generation state
-                bool hasOriginalRecord =
+                bool hasStackLayer = MeshStackService.HasBulgeLayer(config);
+                bool hasOriginalRecord = hasStackLayer ||
                     !string.IsNullOrEmpty(config.originalMeshPath) || config.originalMesh != null;
                 if (hasOriginalRecord)
                 {
-                    var resolvedOriginal = MeshReferenceTracker.ResolveMesh(config, "original");
-                    if (resolvedOriginal != null)
+                    if (hasStackLayer)
                     {
-                        if (GUILayout.Button("Restore Original Mesh"))
+                        if (GUILayout.Button("Remove This Configuration From Mesh Stack"))
                         {
                             if (ScenePreviewManager.IsPreviewing)
                             {
                                 ScenePreviewManager.StopPreview();
                                 previewEntries = null;
                             }
-                            if (targetRenderer != null)
+                            try
                             {
-                                Undo.RecordObject(targetRenderer, "Restore Original Mesh");
-                                targetRenderer.sharedMesh = resolvedOriginal;
+                                var result = MeshStackService.RemoveBulgeConfig(config);
+                                if (blendshapeAutoGenerate)
+                                    config.positionBlendshapes.Clear();
+                                SaveConfig();
+                                statusMessage = $"Removed this configuration from {result.rendererCount} stacked mesh(es).";
+                                statusType = MessageType.Info;
                             }
-                            MeshReferenceTracker.StoreMesh(config, "original", null);
-                            MeshReferenceTracker.StoreMesh(config, "generated", null);
-                            // Only clear position-blendshape names if we're in Auto-Generate mode —
-                            // in Manual Entry the user typed those names and they belong to them.
-                            if (blendshapeAutoGenerate)
-                                config.positionBlendshapes.Clear();
+                            catch (System.Exception e)
+                            {
+                                statusMessage = $"Restore failed: {e.Message}";
+                                statusType = MessageType.Error;
+                                Debug.LogException(e);
+                            }
                         }
                     }
                     else
                     {
-                        EditorGUILayout.HelpBox(
-                            $"Original mesh record exists but couldn't be loaded from:\n{config.originalMeshPath}",
-                            MessageType.Warning);
-                        if (GUILayout.Button("Clear Original Mesh Record"))
+                        var resolvedOriginal = MeshReferenceTracker.ResolveMesh(config, "original");
+                        if (resolvedOriginal != null)
                         {
-                            MeshReferenceTracker.StoreMesh(config, "original", null);
-                            MeshReferenceTracker.StoreMesh(config, "generated", null);
+                            if (GUILayout.Button("Restore Original Mesh"))
+                            {
+                                if (ScenePreviewManager.IsPreviewing)
+                                {
+                                    ScenePreviewManager.StopPreview();
+                                    previewEntries = null;
+                                }
+                                if (targetRenderer != null)
+                                {
+                                    Undo.RecordObject(targetRenderer, "Restore Original Mesh");
+                                    targetRenderer.sharedMesh = resolvedOriginal;
+                                }
+                                MeshReferenceTracker.StoreMesh(config, "original", null);
+                                MeshReferenceTracker.StoreMesh(config, "generated", null);
+                                if (blendshapeAutoGenerate)
+                                    config.positionBlendshapes.Clear();
+                            }
+                        }
+                        else
+                        {
+                            EditorGUILayout.HelpBox(
+                                $"Original mesh record exists but couldn't be loaded from:\n{config.originalMeshPath}",
+                                MessageType.Warning);
+                            if (GUILayout.Button("Clear Original Mesh Record"))
+                            {
+                                MeshReferenceTracker.StoreMesh(config, "original", null);
+                                MeshReferenceTracker.StoreMesh(config, "generated", null);
+                            }
                         }
                     }
                 }
@@ -813,7 +808,7 @@ namespace AuroraKai.SPSTools
                         RestoreAllMeshes();
                 }
 
-                if (MeshReferenceTracker.ResolveMesh(config, "generated") != null)
+                if (hasStackLayer || MeshReferenceTracker.ResolveMesh(config, "generated") != null)
                     EditorGUILayout.HelpBox(
                         "Blendshapes generated. Ready to preview and generate.",
                         MessageType.Info);
@@ -821,6 +816,76 @@ namespace AuroraKai.SPSTools
                 EditorGUILayout.HelpBox(
                     "Auto-generated blendshapes increase mesh data size.",
                     MessageType.None);
+            }
+        }
+
+        protected override void RestoreSingleAdditionalMesh(TrackedMesh entry)
+        {
+            if (entry == null || string.IsNullOrEmpty(entry.rendererPath) ||
+                !MeshStackService.HasBulgeLayer(config))
+            {
+                base.RestoreSingleAdditionalMesh(entry);
+                return;
+            }
+
+            if (ScenePreviewManager.IsPreviewing)
+            {
+                ScenePreviewManager.StopPreview();
+                previewEntries = null;
+            }
+
+            try
+            {
+                var result = MeshStackService.RemoveBulgeLayerForRenderer(
+                    config, entry.rendererPath);
+                MeshReferenceTracker.StoreMesh(entry, "original", null);
+                MeshReferenceTracker.StoreMesh(entry, "generated", null);
+                SaveConfig();
+                statusMessage = $"Removed this configuration from {result.rendererCount} stacked mesh(es).";
+                statusType = MessageType.Info;
+            }
+            catch (System.Exception e)
+            {
+                statusMessage = $"Restore failed: {e.Message}";
+                statusType = MessageType.Error;
+                Debug.LogException(e);
+            }
+        }
+
+        protected override void RestoreAllMeshes()
+        {
+            if (!MeshStackService.HasBulgeLayer(config))
+            {
+                base.RestoreAllMeshes();
+                return;
+            }
+
+            if (!EditorUtility.DisplayDialog("SPS Bulge - Restore All Meshes",
+                "This will remove all generated Bulge layers for this avatar and " +
+                "restore each stacked renderer to its original base mesh.",
+                "Restore All", "Cancel"))
+                return;
+
+            if (ScenePreviewManager.IsPreviewing)
+            {
+                ScenePreviewManager.StopPreview();
+                previewEntries = null;
+            }
+
+            try
+            {
+                var result = MeshStackService.RestoreAllBulgeLayers(config);
+                if (blendshapeAutoGenerate)
+                    config.positionBlendshapes.Clear();
+                SaveConfig();
+                statusMessage = $"Restored {result.rendererCount} mesh stack(s) to their base meshes.";
+                statusType = MessageType.Info;
+            }
+            catch (System.Exception e)
+            {
+                statusMessage = $"Restore failed: {e.Message}";
+                statusType = MessageType.Error;
+                Debug.LogException(e);
             }
         }
 

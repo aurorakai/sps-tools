@@ -123,7 +123,20 @@ namespace AuroraKai.SPSTools
         // Configuration naming (supports multiple configs per avatar)
         public string configurationName = "Default";
 
+        [HideInInspector] public string stableConfigId = "";
+
         public abstract bool IsValid();
+
+        public void EnsureStableConfigId()
+        {
+            if (string.IsNullOrEmpty(stableConfigId))
+                stableConfigId = Guid.NewGuid().ToString("N");
+        }
+
+        public void ResetStableConfigId()
+        {
+            stableConfigId = "";
+        }
 
         /// <summary>
         /// Short identifier for the concrete effect type (e.g. "Bulge").
@@ -188,6 +201,14 @@ namespace AuroraKai.SPSTools
                 current = current.parent;
             }
             return string.Join("/", parts);
+        }
+
+        public static SkinnedMeshRenderer ResolveRenderer(
+            GameObject avatarRoot, string rendererPath)
+        {
+            if (avatarRoot == null || string.IsNullOrEmpty(rendererPath)) return null;
+            var t = avatarRoot.transform.Find(rendererPath);
+            return t != null ? t.GetComponent<SkinnedMeshRenderer>() : null;
         }
 
         /// <summary>

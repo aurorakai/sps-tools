@@ -443,12 +443,8 @@ namespace AuroraKai.SPSTools
             if (config.avatarRoot == null) return;
 
             // Reconnect target renderer
-            if (!string.IsNullOrEmpty(config.rendererPath))
-            {
-                var found = config.avatarRoot.transform.Find(config.rendererPath);
-                if (found != null)
-                    targetRenderer = found.GetComponent<SkinnedMeshRenderer>();
-            }
+            targetRenderer = BaseEffectConfig.ResolveRenderer(
+                config.avatarRoot, config.rendererPath);
 
             // Auto-detect mesh if not set
             if (targetRenderer == null)
@@ -1630,6 +1626,7 @@ namespace AuroraKai.SPSTools
             if (config == null) return;
             var copy = InstantiateWorkingCopy(config);
             copy.configurationName = NextCopyName(config.configurationName);
+            copy.ResetStableConfigId();
             trackedAssetPath = "";
             config = copy;
             CaptureSavedJson();
@@ -1806,6 +1803,9 @@ namespace AuroraKai.SPSTools
             CaptureSavedJson();
         }
 
+        protected string GetTrackedConfigAssetPath()
+            => trackedAssetPath;
+
         protected bool SaveConfig()
         {
             // Guard: if config got destroyed (e.g. domain reload during Generate),
@@ -1821,6 +1821,7 @@ namespace AuroraKai.SPSTools
             }
 
             // Persist preferences that don't survive asset serialization
+            config.EnsureStableConfigId();
             if (config.avatarRoot != null)
                 config.avatarRootName = config.avatarRoot.name;
             config.selectedSocketIndex = selectedSocketIndex;
@@ -2091,10 +2092,8 @@ namespace AuroraKai.SPSTools
         /// </summary>
         protected SkinnedMeshRenderer ResolveAdditionalRenderer(TrackedMesh entry)
         {
-            if (config == null || config.avatarRoot == null) return null;
-            if (entry == null || string.IsNullOrEmpty(entry.rendererPath)) return null;
-            var t = config.avatarRoot.transform.Find(entry.rendererPath);
-            return t != null ? t.GetComponent<SkinnedMeshRenderer>() : null;
+            if (config == null || entry == null) return null;
+            return BaseEffectConfig.ResolveRenderer(config.avatarRoot, entry.rendererPath);
         }
 
         /// <summary>
@@ -2271,7 +2270,7 @@ namespace AuroraKai.SPSTools
         /// <summary>
         /// Restores a single additional mesh to its tracked original.
         /// </summary>
-        protected void RestoreSingleAdditionalMesh(TrackedMesh entry)
+        protected virtual void RestoreSingleAdditionalMesh(TrackedMesh entry)
         {
             if (entry == null) return;
             var r = ResolveAdditionalRenderer(entry);
@@ -2288,7 +2287,7 @@ namespace AuroraKai.SPSTools
         /// <summary>
         /// Restores the primary mesh and every additional mesh to its tracked original.
         /// </summary>
-        protected void RestoreAllMeshes()
+        protected virtual void RestoreAllMeshes()
         {
             if (ScenePreviewManager.IsPreviewing)
             {

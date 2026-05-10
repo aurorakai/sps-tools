@@ -143,7 +143,8 @@ namespace AuroraKai.SPSTools
             float normalFalloffSoftness = 1f,
             int normalSmoothingPasses = 0,
             int normalBoundaryRings = 1,
-            float overlayMatchDistance = 0.02f)
+            float overlayMatchDistance = 0.02f,
+            string meshAssetSuffix = "")
         {
             var results = new List<BlendshapeResult>();
             if (renderers == null || renderers.Count == 0) return results;
@@ -152,7 +153,7 @@ namespace AuroraKai.SPSTools
             var primaryResult = GenerateBulgeBlendshapes(
                 renderers[0], avatarRoot, path, positionCount, displacement,
                 outputFolder, namingPattern, smoothingPasses, subdivide,
-                subdivisionPasses, recalculateNormals, "",
+                subdivisionPasses, recalculateNormals, meshAssetSuffix,
                 normalFalloffSoftness, normalSmoothingPasses, normalBoundaryRings);
             results.Add(primaryResult);
 
@@ -173,7 +174,7 @@ namespace AuroraKai.SPSTools
                 var overlay = GenerateOverlayByTransfer(
                     renderers[i], renderers[0], avatarRoot, path,
                     primaryDeltasByName, primaryWorldVerts, searchablePrimaryIndices,
-                    outputFolder, "SPSBulge_GeneratedMesh" + suffix,
+                    outputFolder, "SPSBulge_GeneratedMesh" + meshAssetSuffix + suffix,
                     subdivide, subdivisionPasses, recalculateNormals,
                     overlayMatchDistance);
                 results.Add(overlay);
