@@ -964,15 +964,6 @@ namespace AuroraKai.SPSTools
         // Utilities
         // ─────────────────────────────────────────────
 
-        private static float GetPathLength()
-        {
-            if (s_waypoints.Count < 2 || s_avatarRoot == null) return 0f;
-            var positions = new List<Vector3>(s_waypoints.Count);
-            foreach (var wp in s_waypoints)
-                positions.Add(s_avatarRoot.TransformPoint(wp.localPosition));
-            return CatmullRomSpline.ArcLength(positions);
-        }
-
         /// <summary>
         /// Snaps a world-space position to the nearest mesh vertex.
         /// Also outputs the smoothed normal at that vertex.

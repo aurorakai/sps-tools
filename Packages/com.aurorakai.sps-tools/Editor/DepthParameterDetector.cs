@@ -101,18 +101,18 @@ namespace AuroraKai.SPSTools
         /// Checks if the avatar root has a VRC_AvatarDescriptor component.
         /// </summary>
         public static bool HasAvatarDescriptor(GameObject avatarRoot)
-        {
-            if (avatarRoot == null) return false;
+            => FindAvatarDescriptor(avatarRoot) != null;
 
-            foreach (var comp in avatarRoot.GetComponents<Component>())
+        private static Component FindAvatarDescriptor(GameObject go)
+        {
+            if (go == null) return null;
+            foreach (var comp in go.GetComponents<Component>())
             {
                 if (comp == null) continue;
-                var typeName = comp.GetType().FullName ?? "";
-                if (typeName.Contains("AvatarDescriptor"))
-                    return true;
+                if (comp.GetType().FullName?.Contains("AvatarDescriptor") == true)
+                    return comp;
             }
-
-            return false;
+            return null;
         }
 
         /// <summary>
@@ -125,16 +125,7 @@ namespace AuroraKai.SPSTools
         {
             if (avatarRoot == null) return null;
 
-            Component descriptor = null;
-            foreach (var comp in avatarRoot.GetComponents<Component>())
-            {
-                if (comp == null) continue;
-                if (comp.GetType().FullName?.Contains("AvatarDescriptor") == true)
-                {
-                    descriptor = comp;
-                    break;
-                }
-            }
+            var descriptor = FindAvatarDescriptor(avatarRoot);
             if (descriptor == null) return null;
 
             // baseAnimationLayers is an array of CustomAnimLayer structs
@@ -195,19 +186,14 @@ namespace AuroraKai.SPSTools
         {
             multiple = false;
 
-            foreach (var comp in current.GetComponents<Component>())
+            if (FindAvatarDescriptor(current.gameObject) != null)
             {
-                if (comp == null) continue;
-                if (comp.GetType().FullName?.Contains("AvatarDescriptor") == true)
+                if (found != null)
                 {
-                    if (found != null)
-                    {
-                        multiple = true;
-                        return;
-                    }
-                    found = current.gameObject;
-                    break;
+                    multiple = true;
+                    return;
                 }
+                found = current.gameObject;
             }
 
             for (int i = 0; i < current.childCount; i++)
@@ -432,33 +418,46 @@ namespace AuroraKai.SPSTools
                     !asmName.Contains("vrcfury", StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                Type[] types;
                 try
                 {
-                    foreach (var type in assembly.GetTypes())
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException e)
+                {
+                    types = e.Types;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning(
+                        $"[SPS Effects] Could not inspect VRCFury assembly '{asmName}' " +
+                        $"for socket/action types: {e.Message}");
+                    continue;
+                }
+
+                foreach (var type in types)
+                {
+                    if (type == null) continue;
+                    switch (type.Name)
                     {
-                        switch (type.Name)
-                        {
-                            case "VRCFuryHapticSocket":
-                                s_hapticSocketType = type;
-                                // Also resolve DepthActionNew as a nested type
-                                foreach (var nested in type.GetNestedTypes(
-                                    BindingFlags.Public | BindingFlags.NonPublic))
-                                {
-                                    if (nested.Name == "DepthActionNew")
-                                        s_depthActionNewType = nested;
-                                }
-                                break;
-                            case "FxFloatAction":
-                                s_fxFloatActionType = type;
-                                break;
-                            case "State":
-                                if (type.Namespace?.Contains("VF") == true)
-                                    s_stateType = type;
-                                break;
-                        }
+                        case "VRCFuryHapticSocket":
+                            s_hapticSocketType = type;
+                            foreach (var nested in type.GetNestedTypes(
+                                BindingFlags.Public | BindingFlags.NonPublic))
+                            {
+                                if (nested.Name == "DepthActionNew")
+                                    s_depthActionNewType = nested;
+                            }
+                            break;
+                        case "FxFloatAction":
+                            s_fxFloatActionType = type;
+                            break;
+                        case "State":
+                            if (type.Namespace?.Contains("VF") == true)
+                                s_stateType = type;
+                            break;
                     }
                 }
-                catch { /* ReflectionTypeLoadException */ }
             }
 
             // DepthActionNew might not be nested - search by name too
@@ -471,7 +470,12 @@ namespace AuroraKai.SPSTools
             if (depthActionUnitsType != null && depthActionUnitsType.IsEnum)
             {
                 try { s_unitsPlugsValue = Enum.Parse(depthActionUnitsType, "Plugs"); }
-                catch (ArgumentException) { }
+                catch (ArgumentException e)
+                {
+                    Debug.LogWarning(
+                        "[SPS Effects] VRCFury DepthActionUnits has no 'Plugs' value; " +
+                        $"socket depth actions will use VRCFury defaults. {e.Message}");
+                }
             }
 
             // Only latch once every type AddFxFloatToSocket needs is resolved.
@@ -502,23 +506,13 @@ namespace AuroraKai.SPSTools
 
         private static Type FindTypeInVRCFury(string simpleName)
         {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                string asmName = assembly.GetName().Name;
-                if (!asmName.Equals("VRCFury", StringComparison.OrdinalIgnoreCase) &&
-                    !asmName.Contains("vrcfury", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                try
+            return ReflectionUtil.FindType(asm =>
                 {
-                    foreach (var type in assembly.GetTypes())
-                    {
-                        if (type.Name == simpleName) return type;
-                    }
-                }
-                catch { }
-            }
-            return null;
+                    string asmName = asm.GetName().Name;
+                    return asmName.Equals("VRCFury", StringComparison.OrdinalIgnoreCase)
+                        || asmName.Contains("vrcfury", StringComparison.OrdinalIgnoreCase);
+                },
+                t => t.Name == simpleName);
         }
 
         // =====================================================================

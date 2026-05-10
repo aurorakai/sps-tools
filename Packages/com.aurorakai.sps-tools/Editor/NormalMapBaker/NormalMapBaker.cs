@@ -54,9 +54,12 @@ namespace AuroraKai.SPSTools
 
                 if (settings.referenceSubdivision > 0)
                 {
+                    var preSubdivisionMesh = workMesh;
                     workMesh = MeshSubdivider.SubdivideInRegion(
-                        workMesh, inputs.path, primary.transform, avatarRoot,
+                        preSubdivisionMesh, inputs.path, primary.transform, avatarRoot,
                         passes: settings.referenceSubdivision);
+                    if (preSubdivisionMesh != null && preSubdivisionMesh != workMesh)
+                        Object.DestroyImmediate(preSubdivisionMesh);
                     workMesh.hideFlags = HideFlags.HideAndDontSave;
                 }
 
@@ -266,7 +269,7 @@ namespace AuroraKai.SPSTools
             var overlayWorldVerts = BlendshapeGenerator.GetSkinnedWorldRefVerts(
                 overlay, overlayVerts);
             var overlayInRegion = BlendshapeGenerator.ComputeVerticesInTube(
-                overlayMesh, overlayWorldVerts, avatarRoot, tube);
+                overlayMesh, overlayVerts, overlayWorldVerts, avatarRoot, tube);
 
             var inRegionIndices = new List<int>();
             for (int i = 0; i < overlayInRegion.Length; i++)
@@ -322,9 +325,11 @@ namespace AuroraKai.SPSTools
             if ((int)settings.resolution <= 0) return "Resolution must be > 0.";
 
             var mesh = inputs.primary.sharedMesh;
-            if (mesh.uv == null || mesh.uv.Length == 0)
+            var uv = mesh.uv;
+            if (uv == null || uv.Length == 0)
                 return "Target mesh has no UV coordinates; can't bake a tangent-space texture.";
-            if (mesh.normals == null || mesh.normals.Length != mesh.vertexCount)
+            var normals = mesh.normals;
+            if (normals == null || normals.Length != mesh.vertexCount)
                 return "Target mesh has missing or mismatched normals.";
 
             return null;

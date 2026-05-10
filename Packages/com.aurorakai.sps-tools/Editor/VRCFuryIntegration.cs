@@ -48,7 +48,12 @@ namespace AuroraKai.SPSTools
                             return attr.InformationalVersion;
                     }
                 }
-                catch { }
+                catch (Exception e)
+                {
+                    Debug.LogWarning(
+                        $"[SPS Effects] Could not inspect assembly '{assembly.GetName().Name}' " +
+                        $"for VRCFury version metadata: {e.Message}");
+                }
             }
             return "unknown";
         }
@@ -253,43 +258,27 @@ namespace AuroraKai.SPSTools
 
         internal static Type FindType(string simpleName)
         {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
+            return ReflectionUtil.FindType(asm =>
                 {
-                    foreach (var type in assembly.GetTypes())
-                    {
-                        if (type.Name == simpleName &&
-                            (type.Namespace?.Contains("VRCFury") == true ||
-                             type.Namespace?.Contains("vrcfury") == true ||
-                             assembly.FullName.Contains("VRCFury")))
-                            return type;
-                    }
-                }
-                catch { /* ReflectionTypeLoadException - skip */ }
-            }
-            return null;
+                    var n = asm.FullName ?? "";
+                    return n.Contains("VRCFury") || n.Contains("vrcfury");
+                },
+                t => t.Name == simpleName)
+                ?? ReflectionUtil.FindType(t => t.Name == simpleName &&
+                    (t.Namespace?.Contains("VRCFury") == true ||
+                     t.Namespace?.Contains("vrcfury") == true));
         }
 
         private static Type FindFeatureType(string simpleName)
         {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
+            return ReflectionUtil.FindType(asm =>
                 {
-                    if (!assembly.FullName.Contains("VRCFury") && !assembly.FullName.Contains("vrcfury"))
-                        continue;
-                    foreach (var type in assembly.GetTypes())
-                    {
-                        if (type.IsAbstract || type.IsInterface) continue;
-                        if (type.Name == simpleName && type.Namespace != null &&
-                            type.Namespace.Contains("Feature"))
-                            return type;
-                    }
-                }
-                catch { /* ReflectionTypeLoadException - skip */ }
-            }
-            return null;
+                    var n = asm.FullName ?? "";
+                    return n.Contains("VRCFury") || n.Contains("vrcfury");
+                },
+                t => !t.IsAbstract && !t.IsInterface
+                     && t.Name == simpleName
+                     && t.Namespace?.Contains("Feature") == true);
         }
 
         private static object CreateFeatureInstance(string featureTypeName)

@@ -475,11 +475,8 @@ namespace AuroraKai.SPSTools
 
         private SkinnedMeshRenderer ResolveRenderer(string path)
         {
-            if (_config == null || _config.avatarRoot == null
-                || string.IsNullOrEmpty(path))
-                return null;
-            var t = _config.avatarRoot.transform.Find(path);
-            return t != null ? t.GetComponent<SkinnedMeshRenderer>() : null;
+            if (_config == null) return null;
+            return BaseEffectConfig.ResolveRenderer(_config.avatarRoot, path);
         }
 
         private static string SanitizeSuffix(string s)

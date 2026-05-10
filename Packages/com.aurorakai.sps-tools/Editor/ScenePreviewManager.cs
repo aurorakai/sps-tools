@@ -72,6 +72,7 @@ namespace AuroraKai.SPSTools
         // Auto-stop on mesh change: remember which mesh was active when preview started
         private static Mesh s_previewStartMesh;
         private static string s_previewRendererPath;
+        private static SkinnedMeshRenderer s_previewStartRenderer;
 
         public static void StartPreview(
             GameObject avatarRoot,
@@ -113,15 +114,16 @@ namespace AuroraKai.SPSTools
             // Store the current mesh on the first renderer target so we can detect swaps
             s_previewStartMesh = null;
             s_previewRendererPath = null;
+            s_previewStartRenderer = null;
             if (targetPaths.Count > 0)
             {
                 s_previewRendererPath = targetPaths[0];
                 var rendererTransform = avatarRoot.transform.Find(s_previewRendererPath);
                 if (rendererTransform != null)
                 {
-                    var smr = rendererTransform.GetComponent<SkinnedMeshRenderer>();
-                    if (smr != null)
-                        s_previewStartMesh = smr.sharedMesh;
+                    s_previewStartRenderer = rendererTransform.GetComponent<SkinnedMeshRenderer>();
+                    if (s_previewStartRenderer != null)
+                        s_previewStartMesh = s_previewStartRenderer.sharedMesh;
                 }
             }
 
@@ -143,27 +145,30 @@ namespace AuroraKai.SPSTools
 
         public static void SampleAtDepth(
             float depth,
-            List<(float threshold, AnimationClip clip)> entries)
+            List<(float threshold, AnimationClip clip)> entries,
+            bool force = false)
         {
             if (!IsPreviewing || s_avatarRoot == null) return;
 
             // Auto-stop if the mesh on the tracked renderer has changed since preview started
             if (s_previewStartMesh != null && s_previewRendererPath != null)
             {
-                var rendererTransform = s_avatarRoot.transform.Find(s_previewRendererPath);
-                if (rendererTransform != null)
+                if (s_previewStartRenderer == null)
                 {
-                    var smr = rendererTransform.GetComponent<SkinnedMeshRenderer>();
-                    if (smr != null && smr.sharedMesh != s_previewStartMesh)
-                    {
-                        StopPreview();
-                        return;
-                    }
+                    var rendererTransform = s_avatarRoot.transform.Find(s_previewRendererPath);
+                    if (rendererTransform != null)
+                        s_previewStartRenderer = rendererTransform.GetComponent<SkinnedMeshRenderer>();
+                }
+                if (s_previewStartRenderer != null
+                    && s_previewStartRenderer.sharedMesh != s_previewStartMesh)
+                {
+                    StopPreview();
+                    return;
                 }
             }
 
             // Skip if depth hasn't changed meaningfully
-            if (Mathf.Abs(depth - s_lastSampledDepth) < 0.001f) return;
+            if (!force && Mathf.Abs(depth - s_lastSampledDepth) < 0.001f) return;
             s_lastSampledDepth = depth;
 
             // Only destroy if we created it (interpolated clip), not a source clip
@@ -371,6 +376,7 @@ namespace AuroraKai.SPSTools
                 s_lastSampledDepth = -1f;
                 s_previewStartMesh = null;
                 s_previewRendererPath = null;
+                s_previewStartRenderer = null;
 
                 EditorApplication.playModeStateChanged -= OnPlayModeChanged;
                 AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;

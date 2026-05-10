@@ -44,7 +44,7 @@ namespace AuroraKai.SPSTools
             int segments = Mathf.Max(path.Count * 8, 20);
             var tube = CatmullRomSpline.BuildTube(path, segments);
             var worldVerts = GetSkinnedWorldRefVerts(renderer, verts);
-            var inRegion = ComputeVerticesInTube(mesh, worldVerts, at, tube);
+            var inRegion = ComputeVerticesInTube(mesh, verts, worldVerts, at, tube);
 
             double sum = 0;
             int count = 0;
@@ -72,7 +72,18 @@ namespace AuroraKai.SPSTools
             Transform avatarRoot,
             CatmullRomSpline.SplineTube tube)
         {
-            var vertices = mesh != null ? mesh.vertices : null;
+            return ComputeVerticesInTube(
+                mesh, mesh != null ? mesh.vertices : null,
+                worldRefVerts, avatarRoot, tube);
+        }
+
+        internal static bool[] ComputeVerticesInTube(
+            Mesh mesh,
+            Vector3[] vertices,
+            Vector3[] worldRefVerts,
+            Transform avatarRoot,
+            CatmullRomSpline.SplineTube tube)
+        {
             int vertCount = vertices != null ? vertices.Length : 0;
             var inTube = new bool[vertCount];
             if (vertCount == 0 || tube.count == 0)
@@ -206,10 +217,13 @@ namespace AuroraKai.SPSTools
                 if (subdivide && subdivisionPasses > 0)
                 {
                     var preSubdivWorldRefs = GetSkinnedWorldRefVerts(renderer, mesh.vertices);
+                    var preSubdivisionMesh = mesh;
                     mesh = MeshSubdivider.SubdivideInRegion(
-                        mesh, path, renderer.transform, avatarRoot,
+                        preSubdivisionMesh, path, renderer.transform, avatarRoot,
                         worldRefVerts: preSubdivWorldRefs,
                         passes: subdivisionPasses);
+                    if (preSubdivisionMesh != null && preSubdivisionMesh != mesh)
+                        Object.DestroyImmediate(preSubdivisionMesh);
                     // BakeMesh on the renderer needs to see the subdivided mesh so its
                     // baked vertex count matches what we project against. Without this,
                     // GetSkinnedWorldRefVerts silently falls into the bind-pose fallback,
@@ -1287,10 +1301,13 @@ namespace AuroraKai.SPSTools
                 if (subdivide && subdivisionPasses > 0)
                 {
                     var preSubdivWorldRefs = GetSkinnedWorldRefVerts(overlayRenderer, mesh.vertices);
+                    var preSubdivisionMesh = mesh;
                     mesh = MeshSubdivider.SubdivideInRegion(
-                        mesh, path, overlayRenderer.transform, avatarRoot,
+                        preSubdivisionMesh, path, overlayRenderer.transform, avatarRoot,
                         worldRefVerts: preSubdivWorldRefs,
                         passes: subdivisionPasses);
+                    if (preSubdivisionMesh != null && preSubdivisionMesh != mesh)
+                        Object.DestroyImmediate(preSubdivisionMesh);
                     Undo.RecordObject(overlayRenderer, "Assign subdivided mesh");
                     overlayRenderer.sharedMesh = mesh;
                     PrefabUtility.RecordPrefabInstancePropertyModifications(overlayRenderer);

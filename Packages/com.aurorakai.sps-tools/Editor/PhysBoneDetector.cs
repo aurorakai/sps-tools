@@ -13,24 +13,10 @@ namespace AuroraKai.SPSTools
         private static System.Type ResolvePhysBoneType()
         {
             if (s_physBoneTypeResolved) return s_physBoneType;
-            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
-            {
-                try
-                {
-                    foreach (var t in asm.GetTypes())
-                    {
-                        if (t.Name == "VRCPhysBone" && (t.FullName?.StartsWith("VRC.") ?? false))
-                        {
-                            s_physBoneType = t;
-                            s_physBoneTypeResolved = true;
-                            return t;
-                        }
-                    }
-                }
-                catch { /* ReflectionTypeLoadException - skip */ }
-            }
+            s_physBoneType = ReflectionUtil.FindType(
+                t => t.Name == "VRCPhysBone" && (t.FullName?.StartsWith("VRC.") ?? false));
             s_physBoneTypeResolved = true; // latch even if missing — VRCSDK may not be installed
-            return null;
+            return s_physBoneType;
         }
 
         /// <summary>

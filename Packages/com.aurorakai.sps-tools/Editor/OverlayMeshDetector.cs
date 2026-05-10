@@ -94,10 +94,11 @@ namespace AuroraKai.SPSTools
             CatmullRomSpline.SplineTube tube)
         {
             var mesh = r.sharedMesh;
+            var verts = mesh.vertices;
             var worldVerts = BlendshapeGenerator.GetSkinnedWorldRefVerts(
-                r, mesh.vertices, bakedMesh);
+                r, verts, bakedMesh);
             var inTube = BlendshapeGenerator.ComputeVerticesInTube(
-                mesh, worldVerts, avatarTransform, tube);
+                mesh, verts, worldVerts, avatarTransform, tube);
             int inRange = 0;
             for (int v = 0; v < inTube.Length; v++)
                 if (inTube[v]) inRange++;

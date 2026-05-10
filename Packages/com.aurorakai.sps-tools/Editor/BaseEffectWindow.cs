@@ -1059,7 +1059,7 @@ namespace AuroraKai.SPSTools
                     previewConfigHash = hash;
                     previewEntries = BuildPreviewThresholds();
                     ScenePreviewManager.UpdateAutoAnimateEntries(previewEntries);
-                    ScenePreviewManager.SampleAtDepth(previewDepth, previewEntries);
+                    ScenePreviewManager.SampleAtDepth(previewDepth, previewEntries, force: true);
                 }
             }
 
@@ -1969,7 +1969,7 @@ namespace AuroraKai.SPSTools
             }
 
             bool fileExists = !string.IsNullOrEmpty(savedPath)
-                && AssetDatabase.LoadAssetAtPath<TConfig>(savedPath) != null;
+                && !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(savedPath));
             string currentJson = config != null ? EditorJsonUtility.ToJson(config) : "";
             _cachedState = ConfigStateDetector.Detect(
                 currentConfigJson: currentJson,

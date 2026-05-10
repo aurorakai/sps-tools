@@ -133,18 +133,9 @@ namespace AuroraKai.SPSTools
         /// </summary>
         public static List<string> ChainToPaths(Transform avatarRoot, List<Transform> chain)
         {
-            var paths = new List<string>();
+            var paths = new List<string>(chain.Count);
             foreach (var bone in chain)
-            {
-                var parts = new List<string>();
-                var current = bone;
-                while (current != null && current != avatarRoot)
-                {
-                    parts.Insert(0, current.name);
-                    current = current.parent;
-                }
-                paths.Add(string.Join("/", parts));
-            }
+                paths.Add(BaseEffectConfig.GetRelativePath(avatarRoot, bone));
             return paths;
         }
     }

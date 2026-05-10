@@ -211,8 +211,18 @@ namespace AuroraKai.SPSTools
                     t = asm.GetType(fullName);
                     if (t != null) return t;
                 }
-                catch (TypeLoadException) { /* dynamic / partial assembly */ }
-                catch (System.IO.FileNotFoundException) { /* missing referenced asm */ }
+                catch (TypeLoadException e)
+                {
+                    Debug.LogWarning(
+                        $"[SPS Baker] Could not inspect assembly '{asm.GetName().Name}' " +
+                        $"for type '{fullName}': {e.Message}");
+                }
+                catch (System.IO.FileNotFoundException e)
+                {
+                    Debug.LogWarning(
+                        $"[SPS Baker] Assembly '{asm.GetName().Name}' has a missing reference " +
+                        $"while resolving '{fullName}': {e.Message}");
+                }
             }
 
             string simpleName = fullName.Contains(".")

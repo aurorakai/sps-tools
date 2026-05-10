@@ -48,6 +48,9 @@ namespace AuroraKai.SPSTools
         private Vector3[] _changedSegments;
         private Vector3[] _unchangedSegments;
 
+        private Color[] _previewPosColors;
+        private Vector3[] _previewPoints;
+
         // =====================================================================
         // Abstract / virtual member implementations
         // =====================================================================
@@ -981,21 +984,24 @@ namespace AuroraKai.SPSTools
 
             // For each position, compute its weight at each position-clip's depth
             // then simulate blend tree interpolation across the full 0->1 range
-            int samples = 200;
+            const int samples = 200;
+            int pointsLen = samples + 1;
+
+            if (_previewPosColors == null || _previewPosColors.Length != posCount)
+                _previewPosColors = new Color[posCount];
+            if (_previewPoints == null || _previewPoints.Length != pointsLen)
+                _previewPoints = new Vector3[pointsLen];
 
             // Position colors (cycle through distinguishable hues)
-            Color[] posColors = new Color[posCount];
             for (int p = 0; p < posCount; p++)
             {
                 float hue = (float)p / posCount * 0.7f + 0.55f; // blue->green->yellow range
-                posColors[p] = Color.HSVToRGB(hue % 1f, 0.6f, 0.9f);
+                _previewPosColors[p] = Color.HSVToRGB(hue % 1f, 0.6f, 0.9f);
             }
 
             // Draw a line per position showing its weight across depth
             for (int pos = 0; pos < posCount; pos++)
             {
-                var points = new List<Vector3>();
-
                 for (int s = 0; s <= samples; s++)
                 {
                     float depth = (float)s / samples;
@@ -1007,24 +1013,23 @@ namespace AuroraKai.SPSTools
                     // Between thresholds, weights blend linearly.
                     float weight = ComputePositionWeightAtDepth(
                         pos, depth, posDepths, posCount,
-                        rangeStart, rangeEnd, intensityScale, config);
+                        rangeStart, rangeEnd, intensityScale);
 
                     float yPixel = graphBottom - Mathf.Min(weight, 1.5f) / 1.5f * graphH;
-                    points.Add(new Vector3(xPixel, yPixel));
+                    _previewPoints[s] = new Vector3(xPixel, yPixel);
                 }
 
-                Handles.color = new Color(posColors[pos].r, posColors[pos].g,
-                    posColors[pos].b, 0.85f);
-                if (points.Count >= 2)
-                    Handles.DrawAAPolyLine(2f, points.ToArray());
+                var c = _previewPosColors[pos];
+                Handles.color = new Color(c.r, c.g, c.b, 0.85f);
+                Handles.DrawAAPolyLine(2f, _previewPoints);
             }
 
             // Draw position threshold markers on the baseline
             for (int pos = 0; pos < posCount; pos++)
             {
                 float xPixel = graphX + posDepths[pos] * graphW;
-                Handles.color = new Color(posColors[pos].r, posColors[pos].g,
-                    posColors[pos].b, 0.5f);
+                var c = _previewPosColors[pos];
+                Handles.color = new Color(c.r, c.g, c.b, 0.5f);
                 Handles.DrawLine(
                     new Vector3(xPixel, graphBottom),
                     new Vector3(xPixel, graphBottom + 6f));
@@ -1079,7 +1084,7 @@ namespace AuroraKai.SPSTools
         private float ComputePositionWeightAtDepth(
             int pos, float depth, float[] posDepths, int posCount,
             float rangeStart, float rangeEnd,
-            float intensityScale, BulgeConfig config)
+            float intensityScale)
         {
             if (depth <= rangeStart) return 0f;
 
@@ -1107,12 +1112,12 @@ namespace AuroraKai.SPSTools
             t = Mathf.Clamp01(t);
 
             float lowerWeight = (lowerPos >= 0)
-                ? GetClipWeightForPosition(pos, lowerPos, intensityScale, config)
+                ? GetClipWeightForPosition(pos, lowerPos, intensityScale)
                 : 0f;
 
             float upperWeight;
             if (upperPos < posCount)
-                upperWeight = GetClipWeightForPosition(pos, upperPos, intensityScale, config);
+                upperWeight = GetClipWeightForPosition(pos, upperPos, intensityScale);
             else if (depth > posDepths[posCount - 1])
             {
                 // After last position: hold at last clip
@@ -1125,9 +1130,7 @@ namespace AuroraKai.SPSTools
             return Mathf.Max(0f, Mathf.Lerp(lowerWeight, upperWeight, t));
         }
 
-        private float GetClipWeightForPosition(
-            int pos, int centerPos,
-            float intensityScale, BulgeConfig config)
+        private float GetClipWeightForPosition(int pos, int centerPos, float intensityScale)
         {
             int offset = Mathf.Abs(pos - centerPos);
             return Mathf.Max(0f, config.GetBellCurveWeight(offset) * intensityScale);
