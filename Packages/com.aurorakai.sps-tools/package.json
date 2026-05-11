@@ -1,7 +1,7 @@
 {
   "name": "com.aurorakai.sps-tools",
   "displayName": "SPS Tools",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0-beta.6",
   "type": "avatar",
   "unity": "2022.3",
   "description": "SPS tooling for avatar creators.",
