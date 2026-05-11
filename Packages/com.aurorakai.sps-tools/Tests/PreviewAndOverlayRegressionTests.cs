@@ -121,6 +121,52 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void PositionIdentifiers_UseManualBlendshapeNames()
+        {
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            try
+            {
+                config.autoPositionCount = 5;
+                config.positionBlendshapes = new List<string>
+                {
+                    "Manual_Pos_A",
+                    "Manual_Pos_B",
+                    "Manual_Pos_C",
+                };
+
+                var identifiers = BulgeGenerator.GetPositionIdentifiers(config);
+
+                CollectionAssert.AreEqual(config.positionBlendshapes, identifiers,
+                    "Bakers and generators must agree on the manual position names.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
+        public void NormalMapTextureSuffix_IncludesRendererPathHash()
+        {
+            string first = SpsNormalMapBakerWindow.BuildTextureSuffix(
+                "Avatar/Body/Overlay", "Mesh");
+            string second = SpsNormalMapBakerWindow.BuildTextureSuffix(
+                "Avatar/Accessories/Overlay", "Mesh");
+
+            Assert.AreNotEqual(first, second,
+                "Renderers with the same GameObject name must not overwrite each other's normal-map PNGs.");
+            StringAssert.EndsWith("_Mesh", first);
+            StringAssert.EndsWith("_Mesh", second);
+        }
+
+        [Test]
+        public void PoiyomiLockArgument_UsesBoolForBoolOverload()
+        {
+            Assert.AreEqual(false, PoiyomiIntegration.CreateLockArgument(typeof(bool)));
+            Assert.AreEqual(0, PoiyomiIntegration.CreateLockArgument(typeof(int)));
+        }
+
+        [Test]
         public void FindCandidateOverlays_DoesNotSuggestMeshesOnlyInsideInflatedThreshold()
         {
             var root = new GameObject("Avatar");

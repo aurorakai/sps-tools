@@ -158,7 +158,7 @@ namespace AuroraKai.SPSTools
                 var parameters = method.GetParameters();
                 var args = new object[parameters.Length];
                 args[0] = new[] { material };
-                args[1] = 0;
+                args[1] = CreateLockArgument(parameters[1].ParameterType);
 
                 for (int i = 2; i < parameters.Length; i++)
                     args[i] = parameters[i].ParameterType == typeof(bool) ? (object)false : null;
@@ -171,6 +171,11 @@ namespace AuroraKai.SPSTools
                 warning = $"Thry unlock threw an exception: {e.Message}";
                 return false;
             }
+        }
+
+        internal static object CreateLockArgument(Type parameterType)
+        {
+            return parameterType == typeof(bool) ? (object)false : 0;
         }
 
         /// <summary>

@@ -108,6 +108,32 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void GetConfigFolder_WithBlankConfigName_UsesDefaultFolder()
+        {
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            try
+            {
+                var avatar = new GameObject("TestAvatar");
+                try
+                {
+                    config.avatarRoot = avatar;
+                    config.configurationName = "   ";
+
+                    Assert.AreEqual("Assets/SPSTools/TestAvatar/Bulge/Default",
+                        config.GetConfigFolder());
+                }
+                finally
+                {
+                    Object.DestroyImmediate(avatar);
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
         public void FindAllConfigs_FindsAssetAnywhereInProject()
         {
             const string testFolder = "Assets/SPSTools/TestConfigs";

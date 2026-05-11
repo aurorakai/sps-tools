@@ -1501,29 +1501,69 @@ namespace AuroraKai.SPSTools
             if (!string.IsNullOrEmpty(folder))
                 SpsAnimationUtility.EnsureFolder(folder);
 
-            // Write to a temp path first, then atomically replace. If CreateAsset
-            // throws (disk full, locked path), the existing asset at `path` is
-            // untouched — callers that captured the previous mesh reference can
-            // still use it. Use ".tmp.asset" so Unity accepts the extension.
-            string tempPath = System.IO.Path.ChangeExtension(path, "tmp.asset");
-            if (AssetDatabase.LoadAssetAtPath<Mesh>(tempPath) != null)
-                AssetDatabase.DeleteAsset(tempPath);
+            // Write to a temp path and move the old mesh aside before replacing.
+            // If the final move fails, restore the old asset instead of leaving
+            // renderers pointing at a mesh asset that was already deleted.
+            string tempPath = BuildUniqueSidecarAssetPath(path, ".tmp.asset");
+            string backupPath = null;
+            bool movedExistingToBackup = false;
 
-            AssetDatabase.CreateAsset(mesh, tempPath);
+            try
+            {
+                AssetDatabase.CreateAsset(mesh, tempPath);
 
-            var existing = AssetDatabase.LoadAssetAtPath<Mesh>(path);
-            if (existing != null)
-                AssetDatabase.DeleteAsset(path);
+                var existing = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+                if (existing != null)
+                {
+                    backupPath = BuildUniqueSidecarAssetPath(path, ".backup.asset");
+                    string backupError = AssetDatabase.MoveAsset(path, backupPath);
+                    if (!string.IsNullOrEmpty(backupError))
+                        throw new System.IO.IOException(
+                            $"[SPS Effects] Failed to move existing mesh '{path}' " +
+                            $"to backup '{backupPath}': {backupError}");
+                    movedExistingToBackup = true;
+                }
 
-            string moveError = AssetDatabase.MoveAsset(tempPath, path);
-            if (!string.IsNullOrEmpty(moveError))
-                throw new System.IO.IOException(
-                    $"[SPS Effects] Failed to rename '{tempPath}' to '{path}': {moveError}");
+                string moveError = AssetDatabase.MoveAsset(tempPath, path);
+                if (!string.IsNullOrEmpty(moveError))
+                {
+                    string restoreError = null;
+                    if (movedExistingToBackup)
+                        restoreError = AssetDatabase.MoveAsset(backupPath, path);
 
-            AssetDatabase.SaveAssets();
+                    string restoreMessage = string.IsNullOrEmpty(restoreError)
+                        ? "Existing mesh was restored."
+                        : $"Existing mesh is still at backup path '{backupPath}' " +
+                          $"because restore failed: {restoreError}";
+                    throw new System.IO.IOException(
+                        $"[SPS Effects] Failed to rename '{tempPath}' to '{path}': " +
+                        $"{moveError} {restoreMessage}");
+                }
+
+                if (movedExistingToBackup && !AssetDatabase.DeleteAsset(backupPath))
+                    Debug.LogWarning($"[SPS Effects] Could not delete old mesh backup: {backupPath}");
+
+                AssetDatabase.SaveAssets();
+            }
+            catch
+            {
+                if (AssetDatabase.LoadAssetAtPath<Mesh>(tempPath) != null)
+                    AssetDatabase.DeleteAsset(tempPath);
+                throw;
+            }
 
             Debug.Log($"[SPS Effects] Generated mesh saved: {path} " +
                 $"({mesh.blendShapeCount} blendshapes)");
+        }
+
+        internal static string BuildUniqueSidecarAssetPath(string assetPath, string suffix)
+        {
+            string folder = System.IO.Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
+            string fileName = System.IO.Path.GetFileNameWithoutExtension(assetPath);
+            string candidate = string.IsNullOrEmpty(folder)
+                ? $"{fileName}{suffix}"
+                : $"{folder}/{fileName}{suffix}";
+            return AssetDatabase.GenerateUniqueAssetPath(candidate);
         }
     }
 }

@@ -214,16 +214,21 @@ namespace AuroraKai.SPSTools
             return paths;
         }
 
-        private static List<string> GetPositionIdentifiers(BulgeConfig config)
+        internal static List<string> GetPositionIdentifiers(BulgeConfig config)
         {
+            if (config == null)
+                return new List<string>();
+
             if (config.EffectiveDeformationMode == DeformationMode.BoneScale)
-                return new List<string>(config.boneChain);
-            if (config.positionBlendshapes.Count > 0)
+                return config.boneChain != null
+                    ? new List<string>(config.boneChain)
+                    : new List<string>();
+            if (config.positionBlendshapes != null && config.positionBlendshapes.Count > 0)
                 return new List<string>(config.positionBlendshapes);
 
             // Auto-generated blendshape names using config's naming pattern
             var names = new List<string>();
-            for (int i = 0; i < config.autoPositionCount; i++)
+            for (int i = 0; i < Mathf.Max(0, config.autoPositionCount); i++)
                 names.Add(config.GetBlendshapeName(i + 1, "SPSBulge_Pos"));
             return names;
         }

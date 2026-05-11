@@ -157,7 +157,10 @@ namespace AuroraKai.SPSTools
             if (avatarRoot == null) return null;
             string avatarName = SanitizeFileName(avatarRoot.name);
             string effect = SanitizeFileName(EffectTypeName);
-            string configName = SanitizeFileName(configurationName);
+            string configName = SanitizeFileName(
+                string.IsNullOrWhiteSpace(configurationName)
+                    ? "Default"
+                    : configurationName);
             return $"Assets/SPSTools/{avatarName}/{effect}/{configName}";
         }
 
@@ -218,6 +221,7 @@ namespace AuroraKai.SPSTools
         /// </summary>
         public static string SanitizeFileName(string name)
         {
+            if (string.IsNullOrEmpty(name)) return string.Empty;
             var invalid = System.IO.Path.GetInvalidFileNameChars();
             return string.Join("_", name.Split(invalid));
         }

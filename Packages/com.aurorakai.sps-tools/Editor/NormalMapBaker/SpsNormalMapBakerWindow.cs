@@ -272,6 +272,8 @@ namespace AuroraKai.SPSTools
             { disableReason = "Config needs at least 2 path waypoints."; return false; }
             if (string.IsNullOrEmpty(_config.rendererPath))
             { disableReason = "Config has no target renderer."; return false; }
+            if (BulgeGenerator.GetPositionIdentifiers(_config).Count <= 0)
+            { disableReason = "Config has no bulge positions."; return false; }
 
             // Baker reads the middle-position clip's curve shape for detail
             // normal timing — so the bulge has to have been Generated first.
@@ -291,8 +293,16 @@ namespace AuroraKai.SPSTools
             var primary = ResolveRenderer(_config.rendererPath);
             if (primary == null) { Log("Primary renderer couldn't be resolved."); return; }
 
-            int positionCount = Mathf.Max(1, _config.autoPositionCount);
+            var positionIds = BulgeGenerator.GetPositionIdentifiers(_config);
+            int positionCount = positionIds.Count;
+            if (positionCount <= 0)
+            {
+                Log("Config has no bulge positions to bake.");
+                return;
+            }
             int targetPosition = positionCount / 2;
+            var previousPrimary = _settings.lastBakedPrimary;
+            var previousOverlayBakes = CopyOverlayBakes(_settings.lastBakedOverlays);
 
             var inputs = new NormalMapBaker.BakeInputs
             {
@@ -317,7 +327,8 @@ namespace AuroraKai.SPSTools
                 return;
             }
             string primaryPath = NormalMapPngWriter.BuildOutputPath(
-                outputFolder, _config.configurationName, SanitizeSuffix(primary.gameObject.name));
+                outputFolder, _config.configurationName,
+                BuildTextureSuffix(_config.rendererPath, primary.gameObject.name));
             var primaryAsset = NormalMapPngWriter.WritePng(primaryResult.texture, primaryPath);
             Object.DestroyImmediate(primaryResult.texture);
             _settings.lastBakedPrimary = primaryAsset;
@@ -361,7 +372,7 @@ namespace AuroraKai.SPSTools
                     {
                         string overlayPath = NormalMapPngWriter.BuildOutputPath(
                             outputFolder, _config.configurationName,
-                            SanitizeSuffix(r.gameObject.name));
+                            BuildTextureSuffix(entry.rendererPath, r.gameObject.name));
                         overlayAsset = NormalMapPngWriter.WritePng(overlayResult.texture, overlayPath);
                         Object.DestroyImmediate(overlayResult.texture);
                         Log($"  saved {overlayPath}");
@@ -393,8 +404,8 @@ namespace AuroraKai.SPSTools
                     if (mat == null) continue;
 
                     Texture2D prior = (path == _config.rendererPath)
-                        ? _settings.lastBakedPrimary
-                        : FindPriorBakedOverlayFor(path);
+                        ? previousPrimary
+                        : FindPriorBakedOverlayFor(path, previousOverlayBakes);
 
                     var res = PoiyomiIntegration.ApplyToMaterial(mat, tex, prior);
                     Log($"  material '{mat.name}' ({path}, slot {m}): {res.outcome}" +
@@ -424,8 +435,7 @@ namespace AuroraKai.SPSTools
             if (animTargets.Count > 0)
             {
                 string clipPath = GetMiddlePositionClipPath();
-                string blendshapeName = _config.GetBlendshapeName(
-                    targetPosition + 1, "SPSBulge_Pos");
+                string blendshapeName = positionIds[targetPosition];
                 var referenceCurve = PoiyomiIntegration.ReadBlendshapeCurve(
                     clipPath, _config.rendererPath, blendshapeName);
                 // Bulge's blendshape weights peak at 100 (percentage).
@@ -459,16 +469,26 @@ namespace AuroraKai.SPSTools
         private string GetMiddlePositionClipPath()
         {
             if (_config == null) return null;
-            int positionCount = Mathf.Max(1, _config.autoPositionCount);
+            int positionCount = Mathf.Max(1, _config.PositionCount);
             int middlePosition1Indexed = (positionCount / 2) + 1;
             string folder = _config.GetOutputFolder();
             return $"{folder}/SPSBulge_Pos{middlePosition1Indexed}.anim";
         }
 
-        private Texture2D FindPriorBakedOverlayFor(string rendererPath)
+        private static List<NormalMapBakerSettings.BakedOverlay> CopyOverlayBakes(
+            List<NormalMapBakerSettings.BakedOverlay> source)
         {
-            if (_settings.lastBakedOverlays == null) return null;
-            foreach (var entry in _settings.lastBakedOverlays)
+            return source != null
+                ? new List<NormalMapBakerSettings.BakedOverlay>(source)
+                : new List<NormalMapBakerSettings.BakedOverlay>();
+        }
+
+        private static Texture2D FindPriorBakedOverlayFor(
+            string rendererPath,
+            List<NormalMapBakerSettings.BakedOverlay> previousOverlayBakes)
+        {
+            if (previousOverlayBakes == null) return null;
+            foreach (var entry in previousOverlayBakes)
                 if (entry.rendererPath == rendererPath) return entry.texture;
             return null;
         }
@@ -484,6 +504,30 @@ namespace AuroraKai.SPSTools
             if (string.IsNullOrEmpty(s)) return "mesh";
             var invalid = System.IO.Path.GetInvalidFileNameChars();
             return string.Join("_", s.Split(invalid)).Replace(' ', '_');
+        }
+
+        internal static string BuildTextureSuffix(string rendererPath, string rendererName)
+        {
+            return $"{StableHash(rendererPath)}_{SanitizeSuffix(rendererName)}";
+        }
+
+        private static string StableHash(string value)
+        {
+            unchecked
+            {
+                const uint offset = 2166136261u;
+                const uint prime = 16777619u;
+                uint hash = offset;
+                if (!string.IsNullOrEmpty(value))
+                {
+                    for (int i = 0; i < value.Length; i++)
+                    {
+                        hash ^= value[i];
+                        hash *= prime;
+                    }
+                }
+                return hash.ToString("x8");
+            }
         }
 
         private void Log(string line)

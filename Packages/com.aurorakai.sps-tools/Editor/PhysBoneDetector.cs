@@ -41,21 +41,32 @@ namespace AuroraKai.SPSTools
                     {
                         // Check if our target bone is in the ignore list
                         var so = new UnityEditor.SerializedObject(comp);
-                        var ignoreTransforms = so.FindProperty("ignoreTransforms");
-                        if (ignoreTransforms != null && ignoreTransforms.isArray)
+                        bool ignoredByThisPhysBone = false;
+                        try
                         {
-                            for (int i = 0; i < ignoreTransforms.arraySize; i++)
+                            var ignoreTransforms = so.FindProperty("ignoreTransforms");
+                            if (ignoreTransforms != null && ignoreTransforms.isArray)
                             {
-                                var ignored = ignoreTransforms.GetArrayElementAtIndex(i)
-                                    .objectReferenceValue as Transform;
-                                if (ignored == bone)
+                                for (int i = 0; i < ignoreTransforms.arraySize; i++)
                                 {
-                                    so.Dispose();
-                                    return null; // Bone is in ignore list - safe
+                                    var ignored = ignoreTransforms.GetArrayElementAtIndex(i)
+                                        .objectReferenceValue as Transform;
+                                    if (ignored == bone)
+                                    {
+                                        ignoredByThisPhysBone = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
-                        so.Dispose();
+                        finally
+                        {
+                            so.Dispose();
+                        }
+
+                        if (ignoredByThisPhysBone)
+                            continue;
+
                         return current.name;
                     }
                 }

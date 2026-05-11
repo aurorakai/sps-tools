@@ -188,9 +188,12 @@ namespace AuroraKai.SPSTools
         protected List<string> GetEnabledDepthParameters()
         {
             var result = new List<string>();
+            if (config.enabledSocketIndices == null)
+                return result;
+
             foreach (int idx in config.enabledSocketIndices)
             {
-                if (idx >= detectedSockets.Count) continue;
+                if (idx < 0 || idx >= detectedSockets.Count) continue;
                 var socket = detectedSockets[idx];
                 if (socket.depthFxFloats.Count > 0 &&
                     !result.Contains(socket.depthFxFloats[0]))
@@ -754,7 +757,10 @@ namespace AuroraKai.SPSTools
             if (detectedSockets.Count > 0)
             {
                 // Ensure enabledSocketIndices list is valid
-                config.enabledSocketIndices.RemoveAll(idx => idx >= detectedSockets.Count);
+                if (config.enabledSocketIndices == null)
+                    config.enabledSocketIndices = new List<int>();
+                config.enabledSocketIndices.RemoveAll(
+                    idx => idx < 0 || idx >= detectedSockets.Count);
 
                 // Build list of available (not-yet-added) sockets
                 var availableIndices = new List<int>();
@@ -1441,6 +1447,15 @@ namespace AuroraKai.SPSTools
             {
                 try
                 {
+                    if (string.IsNullOrWhiteSpace(config.configurationName))
+                    {
+                        EditorUtility.DisplayDialog(EffectName,
+                            "Enter a configuration name before generating.", "OK");
+                        statusMessage = "Enter a configuration name before generating.";
+                        statusType = MessageType.Warning;
+                        return;
+                    }
+
                     // Collect depth parameters from enabled sockets
                     var depthParams = GetEnabledDepthParameters();
                     if (depthParams.Count == 0)
@@ -1772,6 +1787,7 @@ namespace AuroraKai.SPSTools
         protected void AutoSaveConfig()
         {
             if (config == null) return;
+            if (string.IsNullOrWhiteSpace(config.configurationName)) return;
             string path = trackedAssetPath;
             if (string.IsNullOrEmpty(path)) return;
 
@@ -1817,6 +1833,12 @@ namespace AuroraKai.SPSTools
                     "The saved asset (if any) was not modified.");
                 statusMessage = "Cannot save - config was lost. Reopen the window and retry.";
                 statusType = MessageType.Error;
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(config.configurationName))
+            {
+                statusMessage = "Enter a configuration name before saving.";
+                statusType = MessageType.Warning;
                 return false;
             }
 
