@@ -268,19 +268,19 @@ namespace AuroraKai.SPSTools
             var records = LoadStackRecords(config.avatarRoot);
             try
             {
+                var removedStableConfigIds = new HashSet<string>();
                 foreach (var record in records)
-                    record.stack.layers.RemoveAll(l => l.effectType == "Bulge");
-                var result = RebuildBulgeStacks(config.avatarRoot, records, config);
-                MeshReferenceTracker.StoreMesh(config, "original", null);
-                MeshReferenceTracker.StoreMesh(config, "generated", null);
-                if (config.additionalMeshes != null)
                 {
-                    foreach (var entry in config.additionalMeshes)
+                    foreach (var layer in record.stack.layers)
                     {
-                        MeshReferenceTracker.StoreMesh(entry, "original", null);
-                        MeshReferenceTracker.StoreMesh(entry, "generated", null);
+                        if (layer.effectType == "Bulge" &&
+                            !string.IsNullOrEmpty(layer.stableConfigId))
+                            removedStableConfigIds.Add(layer.stableConfigId);
                     }
+                    record.stack.layers.RemoveAll(l => l.effectType == "Bulge");
                 }
+                var result = RebuildBulgeStacks(config.avatarRoot, records, config);
+                ClearLegacyReferencesForConfigs(removedStableConfigIds);
                 return result;
             }
             catch
@@ -662,6 +662,39 @@ namespace AuroraKai.SPSTools
                     MeshReferenceTracker.StoreMesh(entry, "generated", stack.ResolveComposedMesh());
                 }
             }
+        }
+
+        private static void ClearLegacyReferencesForConfigs(
+            HashSet<string> stableConfigIds)
+        {
+            if (stableConfigIds == null || stableConfigIds.Count == 0)
+                return;
+
+            bool changed = false;
+            var configs = ConfigAssetHelper.FindAllConfigs<BulgeConfig>();
+            foreach (var config in configs)
+            {
+                if (config == null ||
+                    string.IsNullOrEmpty(config.stableConfigId) ||
+                    !stableConfigIds.Contains(config.stableConfigId))
+                    continue;
+
+                MeshReferenceTracker.StoreMesh(config, "original", null);
+                MeshReferenceTracker.StoreMesh(config, "generated", null);
+                if (config.additionalMeshes != null)
+                {
+                    foreach (var entry in config.additionalMeshes)
+                    {
+                        MeshReferenceTracker.StoreMesh(entry, "original", null);
+                        MeshReferenceTracker.StoreMesh(entry, "generated", null);
+                    }
+                }
+                EditorUtility.SetDirty(config);
+                changed = true;
+            }
+
+            if (changed)
+                AssetDatabase.SaveAssets();
         }
 
         private static void ValidateBulgeNameCollisions(

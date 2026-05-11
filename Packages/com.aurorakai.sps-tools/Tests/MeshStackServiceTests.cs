@@ -148,6 +148,82 @@ namespace AuroraKai.SPSTools.Tests
             }
         }
 
+        [Test]
+        public void RestoreAllBulgeLayers_ClearsGeneratedReferencesForRemovedConfigs()
+        {
+            var avatar = new GameObject("MeshStackServiceTests");
+            try
+            {
+                var body = CreateRenderer(avatar, "Body");
+                var baseMesh = body.sharedMesh;
+
+                var configA = CreateConfig(avatar, "A", body, new SkinnedMeshRenderer[0]);
+                var pathA = SaveConfigAsset(configA);
+                var resultA = MeshStackService.GenerateOrUpdateBulge(configA, pathA);
+                configA.positionBlendshapes = resultA.primaryBlendshapeNames;
+
+                var configB = CreateConfig(avatar, "B", body, new SkinnedMeshRenderer[0]);
+                var pathB = SaveConfigAsset(configB);
+                var resultB = MeshStackService.GenerateOrUpdateBulge(configB, pathB);
+                configB.positionBlendshapes = resultB.primaryBlendshapeNames;
+
+                Assert.IsNotNull(MeshReferenceTracker.ResolveMesh(configA, "generated"));
+                Assert.IsNotNull(MeshReferenceTracker.ResolveMesh(configB, "generated"));
+
+                MeshStackService.RestoreAllBulgeLayers(configA);
+
+                Assert.AreSame(baseMesh, body.sharedMesh);
+                Assert.IsFalse(MeshStackService.HasBulgeLayer(configA));
+                Assert.IsFalse(MeshStackService.HasBulgeLayer(configB));
+                Assert.IsNull(MeshReferenceTracker.ResolveMesh(configA, "generated"));
+                Assert.IsNull(MeshReferenceTracker.ResolveMesh(configB, "generated"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatar);
+            }
+        }
+
+        [Test]
+        public void StoredMeshReferences_ResolveMovedAssetsByGuid()
+        {
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            var stack = ScriptableObject.CreateInstance<MeshStackAsset>();
+            try
+            {
+                string oldFolder = $"{TestRootFolder}/MovedMesh/Old";
+                string newFolder = $"{TestRootFolder}/MovedMesh/New";
+                SpsAnimationUtility.EnsureFolder(oldFolder);
+                SpsAnimationUtility.EnsureFolder(newFolder);
+
+                var mesh = CreateMesh();
+                string oldPath = $"{oldFolder}/Generated.asset";
+                string newPath = $"{newFolder}/Generated.asset";
+                AssetDatabase.CreateAsset(mesh, oldPath);
+
+                MeshReferenceTracker.StoreMesh(config, "generated", mesh);
+                stack.StoreBaseMesh(mesh);
+                config.generatedMesh = null;
+                stack.baseMesh = null;
+
+                string moveError = AssetDatabase.MoveAsset(oldPath, newPath);
+                Assert.IsTrue(string.IsNullOrEmpty(moveError), moveError);
+
+                var resolvedConfigMesh = MeshReferenceTracker.ResolveMesh(
+                    config, "generated");
+                var resolvedStackMesh = stack.ResolveBaseMesh();
+
+                Assert.AreEqual(newPath, AssetDatabase.GetAssetPath(resolvedConfigMesh));
+                Assert.AreEqual(newPath, config.generatedMeshPath);
+                Assert.AreEqual(newPath, AssetDatabase.GetAssetPath(resolvedStackMesh));
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+                Object.DestroyImmediate(stack);
+            }
+        }
+
         private static BulgeConfig CreateConfig(
             GameObject avatar,
             string name,

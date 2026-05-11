@@ -47,10 +47,17 @@ namespace AuroraKai.SPSTools
         private static Mesh ResolveStoredMesh(Mesh mesh, string path, string guid)
         {
             if (mesh != null) return mesh;
-            if (string.IsNullOrEmpty(path)) return null;
-            if (!string.IsNullOrEmpty(guid) && AssetDatabase.AssetPathToGUID(path) != guid)
-                return null;
-            return AssetDatabase.LoadAssetAtPath<Mesh>(path);
+            string resolvedPath = path;
+            if (!string.IsNullOrEmpty(guid))
+            {
+                string guidPath = AssetDatabase.GUIDToAssetPath(guid);
+                if (!string.IsNullOrEmpty(guidPath))
+                    resolvedPath = guidPath;
+                else if (!string.IsNullOrEmpty(path) && AssetDatabase.AssetPathToGUID(path) != guid)
+                    return null;
+            }
+            if (string.IsNullOrEmpty(resolvedPath)) return null;
+            return AssetDatabase.LoadAssetAtPath<Mesh>(resolvedPath);
         }
     }
 
@@ -102,10 +109,17 @@ namespace AuroraKai.SPSTools
         private static Mesh ResolveStoredMesh(Mesh mesh, string path, string guid)
         {
             if (mesh != null) return mesh;
-            if (string.IsNullOrEmpty(path)) return null;
-            if (!string.IsNullOrEmpty(guid) && AssetDatabase.AssetPathToGUID(path) != guid)
-                return null;
-            return AssetDatabase.LoadAssetAtPath<Mesh>(path);
+            string resolvedPath = path;
+            if (!string.IsNullOrEmpty(guid))
+            {
+                string guidPath = AssetDatabase.GUIDToAssetPath(guid);
+                if (!string.IsNullOrEmpty(guidPath))
+                    resolvedPath = guidPath;
+                else if (!string.IsNullOrEmpty(path) && AssetDatabase.AssetPathToGUID(path) != guid)
+                    return null;
+            }
+            if (string.IsNullOrEmpty(resolvedPath)) return null;
+            return AssetDatabase.LoadAssetAtPath<Mesh>(resolvedPath);
         }
     }
 }
