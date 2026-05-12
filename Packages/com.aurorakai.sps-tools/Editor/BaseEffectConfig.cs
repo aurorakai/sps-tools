@@ -53,6 +53,13 @@ namespace AuroraKai.SPSTools
         public string generatedMeshGuid = "";
     }
 
+    [Serializable]
+    public class SocketFxFloatSelection
+    {
+        public string socketPath = "";
+        public string parameterName = "";
+    }
+
     public abstract class BaseEffectConfig : ScriptableObject
     {
         // Hidden in Inspector because scene references can't be serialized in assets.
@@ -62,6 +69,8 @@ namespace AuroraKai.SPSTools
         public string depthParameter = "SPS_Depth";
         public int selectedSocketIndex = -1;
         public List<int> enabledSocketIndices = new List<int>();
+        public List<SocketFxFloatSelection> socketFxFloatSelections =
+            new List<SocketFxFloatSelection>();
         public DeformationMode deformationMode = DeformationMode.Blendshape;
 
         /// <summary>

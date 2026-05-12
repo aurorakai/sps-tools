@@ -187,21 +187,8 @@ namespace AuroraKai.SPSTools
         /// </summary>
         protected List<string> GetEnabledDepthParameters()
         {
-            var result = new List<string>();
-            if (config.enabledSocketIndices == null)
-                return result;
-
-            foreach (int idx in config.enabledSocketIndices)
-            {
-                if (idx < 0 || idx >= detectedSockets.Count) continue;
-                var socket = detectedSockets[idx];
-                if (socket.depthFxFloats.Count > 0 &&
-                    !result.Contains(socket.depthFxFloats[0]))
-                {
-                    result.Add(socket.depthFxFloats[0]);
-                }
-            }
-            return result;
+            return SocketFxFloatSelectionUtility.GetEnabledDepthParameters(
+                config, detectedSockets);
         }
 
         /// <summary>
@@ -821,18 +808,73 @@ namespace AuroraKai.SPSTools
 
                         if (socket.depthFxFloats.Count > 0)
                         {
-                            EditorGUILayout.LabelField(
-                                $"Parameter: {socket.depthFxFloats[0]}",
-                                EditorStyles.miniLabel);
+                            string selectedParameter =
+                                SocketFxFloatSelectionUtility.GetSelectedParameter(
+                                    config, socket);
+                            int selectedParamIndex = Mathf.Max(
+                                0, socket.depthFxFloats.IndexOf(selectedParameter));
+                            var parameterOptions = new string[socket.depthFxFloats.Count + 1];
+                            for (int p = 0; p < socket.depthFxFloats.Count; p++)
+                                parameterOptions[p] = socket.depthFxFloats[p];
+                            parameterOptions[socket.depthFxFloats.Count] =
+                                "Add new FX Float...";
+
+                            EditorGUILayout.BeginHorizontal();
+                            int newParamIndex = EditorGUILayout.Popup(
+                                selectedParamIndex, parameterOptions);
+                            if (newParamIndex == socket.depthFxFloats.Count)
+                            {
+                                string suggested =
+                                    SocketFxFloatSelectionUtility.MakeUniqueParameterName(
+                                        DepthParameterDetector.SuggestParameterName(socket),
+                                        socket);
+                                if (DepthParameterDetector.AddFxFloatToSocket(
+                                        socket.component, suggested))
+                                {
+                                    SocketFxFloatSelectionUtility.SetSelectedParameter(
+                                        config, socket, suggested);
+                                    EditorUtility.SetDirty(config);
+                                    RefreshSockets();
+                                }
+                            }
+                            else if (newParamIndex != selectedParamIndex)
+                            {
+                                SocketFxFloatSelectionUtility.SetSelectedParameter(
+                                    config, socket, socket.depthFxFloats[newParamIndex]);
+                                EditorUtility.SetDirty(config);
+                            }
+
+                            if (GUILayout.Button(RemoveGlyph, GUILayout.Width(22), GUILayout.Height(18)))
+                            {
+                                string parameterToRemove = socket.depthFxFloats[selectedParamIndex];
+                                if (EditorUtility.DisplayDialog(
+                                        EffectName,
+                                        $"Delete FX Float '{parameterToRemove}' from this SPS Socket?",
+                                        "Delete", "Cancel") &&
+                                    DepthParameterDetector.RemoveFxFloatFromSocket(
+                                        socket.component, parameterToRemove))
+                                {
+                                    RefreshSockets();
+                                }
+                            }
+                            EditorGUILayout.EndHorizontal();
                         }
                         else
                         {
                             EditorGUILayout.LabelField("No FX Float set", EditorStyles.miniLabel);
-                            string suggested = DepthParameterDetector.SuggestParameterName(socket);
+                            string suggested =
+                                SocketFxFloatSelectionUtility.MakeUniqueParameterName(
+                                    DepthParameterDetector.SuggestParameterName(socket),
+                                    socket);
                             if (GUILayout.Button($"Add \"{suggested}\"", GUILayout.Height(18)))
                             {
                                 if (DepthParameterDetector.AddFxFloatToSocket(socket.component, suggested))
+                                {
+                                    SocketFxFloatSelectionUtility.SetSelectedParameter(
+                                        config, socket, suggested);
+                                    EditorUtility.SetDirty(config);
                                     RefreshSockets();
+                                }
                             }
                         }
 
@@ -853,7 +895,9 @@ namespace AuroraKai.SPSTools
                 {
                     if (idx < detectedSockets.Count && detectedSockets[idx].depthFxFloats.Count > 0)
                     {
-                        config.depthParameter = detectedSockets[idx].depthFxFloats[0];
+                        config.depthParameter =
+                            SocketFxFloatSelectionUtility.GetSelectedParameter(
+                                config, detectedSockets[idx]);
                         break;
                     }
                 }

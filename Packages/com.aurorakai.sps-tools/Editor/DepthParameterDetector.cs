@@ -360,6 +360,70 @@ namespace AuroraKai.SPSTools
             }
         }
 
+        public static bool RemoveFxFloatFromSocket(
+            Component socketComponent, string parameterName)
+        {
+            if (socketComponent == null || string.IsNullOrEmpty(parameterName))
+                return false;
+
+            try
+            {
+                Undo.RegisterCompleteObjectUndo(socketComponent, "Remove SPS Depth FX Float");
+
+                object depthActions = GetFieldValueRecursive(socketComponent, "depthActions2");
+                if (!(depthActions is IList depthList))
+                {
+                    Debug.LogError("[SPS Effects] Could not find depthActions2 field.");
+                    return false;
+                }
+
+                bool removed = false;
+                for (int depthIndex = depthList.Count - 1; depthIndex >= 0; depthIndex--)
+                {
+                    object depthAction = depthList[depthIndex];
+                    if (depthAction == null) continue;
+
+                    object state = GetFieldValueRecursive(depthAction, "actionSet");
+                    if (state == null) continue;
+
+                    object actions = GetFieldValueRecursive(state, "actions");
+                    if (!(actions is IList actionList)) continue;
+
+                    bool removedFromDepthAction = false;
+                    for (int actionIndex = actionList.Count - 1; actionIndex >= 0; actionIndex--)
+                    {
+                        object action = actionList[actionIndex];
+                        if (!IsFxFloatActionNamed(action, parameterName)) continue;
+
+                        actionList.RemoveAt(actionIndex);
+                        removed = true;
+                        removedFromDepthAction = true;
+                    }
+
+                    if (removedFromDepthAction && actionList.Count == 0)
+                        depthList.RemoveAt(depthIndex);
+                }
+
+                if (!removed)
+                    return false;
+
+                EditorUtility.SetDirty(socketComponent);
+
+                if (!Application.isPlaying)
+                    UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
+                        socketComponent.gameObject.scene);
+
+                Debug.Log($"[SPS Effects] Removed depth FX Float '{parameterName}' " +
+                    $"from SPS Socket on '{socketComponent.gameObject.name}'.");
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SPS Effects] Failed to remove FX Float from socket: {e.Message}\n{e.StackTrace}");
+                return false;
+            }
+        }
+
         /// <summary>
         /// Dumps all serialized properties of a component to the console.
         /// </summary>
@@ -563,20 +627,13 @@ namespace AuroraKai.SPSTools
 
                 foreach (object action in actionList)
                 {
-                    if (action == null) continue;
-
-                    // Check if this is an FxFloatAction
-                    string actionTypeName = action.GetType().Name;
-                    if (actionTypeName == "FxFloatAction" ||
-                        actionTypeName.Contains("FxFloat") ||
-                        actionTypeName.Contains("FloatAction"))
+                    object paramName = IsFxFloatAction(action)
+                        ? GetFieldValueRecursive(action, "name")
+                        : null;
+                    if (paramName is string name && !string.IsNullOrEmpty(name) &&
+                        !results.Contains(name))
                     {
-                        object paramName = GetFieldValueRecursive(action, "name");
-                        if (paramName is string name && !string.IsNullOrEmpty(name) &&
-                            !results.Contains(name))
-                        {
-                            results.Add(name);
-                        }
+                        results.Add(name);
                     }
                 }
             }
@@ -620,6 +677,22 @@ namespace AuroraKai.SPSTools
                 type = type.BaseType;
             }
             return false;
+        }
+
+        private static bool IsFxFloatActionNamed(object action, string parameterName)
+        {
+            if (!IsFxFloatAction(action)) return false;
+            object value = GetFieldValueRecursive(action, "name");
+            return value is string name && name == parameterName;
+        }
+
+        private static bool IsFxFloatAction(object action)
+        {
+            if (action == null) return false;
+            string actionTypeName = action.GetType().Name;
+            return actionTypeName == "FxFloatAction" ||
+                actionTypeName.Contains("FxFloat") ||
+                actionTypeName.Contains("FloatAction");
         }
 
         private static Type GetListElementType(Type listType)
