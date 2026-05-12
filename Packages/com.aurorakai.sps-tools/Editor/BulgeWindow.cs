@@ -966,21 +966,13 @@ namespace AuroraKai.SPSTools
             // (temporary -- just for computing weights at each depth sample)
             float rangeStart = config.depthRangeStart;
             float rangeEnd = config.depthRangeEnd;
-            float rangeSize = rangeEnd - rangeStart;
-            float rampMargin = posCount > 1
-                ? rangeSize / (posCount - 1) * 0.5f
-                : rangeSize * 0.25f;
-            float innerStart = rangeStart + rampMargin;
             float intensityScale = config.bulgeIntensity;
 
             // Compute position depth thresholds (matching BuildThresholdEntries)
             var posDepths = new float[posCount];
+            var computedDepths = BulgeGenerator.ComputePositionDepths(config, posCount);
             for (int pos = 0; pos < posCount; pos++)
-            {
-                posDepths[pos] = posCount > 1
-                    ? innerStart + pos * (rangeEnd - innerStart) / (posCount - 1)
-                    : (rangeStart + rangeEnd) * 0.5f;
-            }
+                posDepths[pos] = computedDepths[pos];
 
             // For each position, compute its weight at each position-clip's depth
             // then simulate blend tree interpolation across the full 0->1 range
@@ -1101,7 +1093,7 @@ namespace AuroraKai.SPSTools
                     lowerPos = p;
                     lowerDepth = posDepths[p];
                     upperPos = p + 1;
-                    upperDepth = (p + 1 < posCount) ? posDepths[p + 1] : 1f;
+                    upperDepth = (p + 1 < posCount) ? posDepths[p + 1] : rangeEnd;
                 }
             }
 

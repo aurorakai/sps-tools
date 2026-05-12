@@ -33,9 +33,10 @@ namespace AuroraKai.SPSTools
             var entries = BuildThresholdEntries(config, positionIds, restClip);
 
             int clipNum = 0;
+            var savedClips = new HashSet<AnimationClip>();
             for (int i = 0; i < entries.Count; i++)
             {
-                if (entries[i].clip != restClip)
+                if (entries[i].clip != restClip && savedClips.Add(entries[i].clip))
                 {
                     clipNum++;
                     SpsAnimationUtility.SaveClip(entries[i].clip, folder,
@@ -94,12 +95,7 @@ namespace AuroraKai.SPSTools
             int posCount = config.PositionCount;
             float rangeStart = config.depthRangeStart;
             float rangeEnd = config.depthRangeEnd;
-            float rangeSize = rangeEnd - rangeStart;
-
-            // Ramp-in margin: space before the first position for a smooth entry
-            float rampMargin = posCount > 1
-                ? rangeSize / (posCount - 1) * 0.5f
-                : rangeSize * 0.25f;
+            var positionDepths = ComputePositionDepths(config, posCount);
 
             var entries = new List<(float threshold, AnimationClip clip)>();
 
@@ -108,30 +104,39 @@ namespace AuroraKai.SPSTools
             if (rangeStart > FullRangeEpsilon)
                 entries.Add((rangeStart, restClip));
 
-            // First position is inset from range start (smooth ramp-in from rest)
-            // Last position extends to range end (peak stays at max depth)
-            float innerStart = rangeStart + rampMargin;
-
+            AnimationClip lastClip = null;
             for (int pos = 0; pos < posCount; pos++)
             {
-                float t;
-                if (posCount > 1)
-                    t = innerStart + pos * (rangeEnd - innerStart) / (posCount - 1);
-                else
-                    t = (rangeStart + rangeEnd) * 0.5f;
-
                 var clip = CreatePositionClip(config, positionIds, pos);
-                entries.Add((t, clip));
+                entries.Add((positionDepths[pos], clip));
+                lastClip = clip;
             }
 
-            // Hold the last position to depth 1.0 when user-chosen rangeEnd < 1.0.
-            if (rangeEnd < 1f - FullRangeEpsilon)
-            {
-                var lastClip = CreatePositionClip(config, positionIds, posCount - 1);
+            // Hold the deepest position through range end, and keep holding it
+            // to depth 1.0 when the user-chosen range ends early.
+            if (lastClip != null && positionDepths.Count > 0)
+                entries.Add((rangeEnd, lastClip));
+            if (lastClip != null && rangeEnd < 1f - FullRangeEpsilon)
                 entries.Add((1f, lastClip));
-            }
 
             return entries;
+        }
+
+        internal static List<float> ComputePositionDepths(BulgeConfig config, int posCount)
+        {
+            var depths = new List<float>();
+            if (config == null || posCount <= 0) return depths;
+
+            float rangeStart = config.depthRangeStart;
+            float rangeEnd = config.depthRangeEnd;
+            float rangeSize = rangeEnd - rangeStart;
+            float step = rangeSize / posCount;
+            float firstDepth = rangeStart + step * 0.5f;
+
+            for (int pos = 0; pos < posCount; pos++)
+                depths.Add(firstDepth + pos * step);
+
+            return depths;
         }
 
         /// <summary>

@@ -146,6 +146,37 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void BulgeThresholds_TwoPositions_HoldDeepestPositionBeforeMaxDepth()
+        {
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            try
+            {
+                config.rendererPath = "Body";
+                config.depthRangeStart = 0f;
+                config.depthRangeEnd = 1f;
+                config.bulgeIntensity = 1f;
+                config.bulgeWidth = 1;
+                config.positionBlendshapes = new List<string>
+                {
+                    "SPSBulge_Pos1",
+                    "SPSBulge_Pos2",
+                };
+
+                var entries = BulgeGenerator.BuildPreviewThresholds(config);
+
+                Assert.AreEqual(4, entries.Count);
+                Assert.AreEqual(0f, entries[0].threshold, 0.0001f);
+                Assert.AreEqual(0.25f, entries[1].threshold, 0.0001f);
+                Assert.AreEqual(0.75f, entries[2].threshold, 0.0001f);
+                Assert.AreEqual(1f, entries[3].threshold, 0.0001f);
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
         public void NormalMapTextureSuffix_IncludesRendererPathHash()
         {
             string first = SpsNormalMapBakerWindow.BuildTextureSuffix(
