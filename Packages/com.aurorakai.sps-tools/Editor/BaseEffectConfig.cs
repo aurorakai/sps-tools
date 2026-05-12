@@ -12,11 +12,11 @@ namespace AuroraKai.SPSTools
         // Bone-chain / bone-scale deformation path. Hidden until testing is complete;
         // underlying code (generators, detectors, serialized fields) is intentionally
         // preserved so flipping this flag restores full functionality.
-        public const bool BoneChainEnabled = false;
+        public static readonly bool BoneChainEnabled = false;
 
         // Developer-only UI (blend-tree dump button, verbose logs on generate).
         // Leave false for shipped builds.
-        public const bool DebugUiEnabled = false;
+        public static readonly bool DebugUiEnabled = false;
     }
 
     public enum DeformationMode
