@@ -37,6 +37,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      VPM_DISPATCH_TOKEN: ${{ secrets.VPM_DISPATCH_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -124,8 +126,6 @@ jobs:
         # If the secret is absent the step is skipped silently - useful
         # during initial setup or if the listing is maintained manually.
         if: ${{ env.VPM_DISPATCH_TOKEN != '' }}
-        env:
-          VPM_DISPATCH_TOKEN: ${{ secrets.VPM_DISPATCH_TOKEN }}
         run: |
           curl -fsSL \
             -X POST \

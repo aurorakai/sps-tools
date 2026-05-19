@@ -4,40 +4,41 @@ using UnityEngine;
 
 namespace AuroraKai.SPSTools.Tests
 {
+    public class DepthParameterDetectorDummySocket : MonoBehaviour
+    {
+        public List<DepthParameterDetectorDummyDepthAction> depthActions2 =
+            new List<DepthParameterDetectorDummyDepthAction>();
+    }
+
+    public class DepthParameterDetectorDummyDepthAction
+    {
+        public DepthParameterDetectorDummyState actionSet =
+            new DepthParameterDetectorDummyState();
+    }
+
+    public class DepthParameterDetectorDummyState
+    {
+        public List<object> actions = new List<object>();
+    }
+
+    public class FxFloatAction
+    {
+        public string name;
+    }
+
+    public class NonFloatAction
+    {
+        public string name;
+    }
+
     public class DepthParameterDetectorTests
     {
-        public class DummySocket : MonoBehaviour
-        {
-            public List<DummyDepthAction> depthActions2 =
-                new List<DummyDepthAction>();
-        }
-
-        public class DummyDepthAction
-        {
-            public DummyState actionSet = new DummyState();
-        }
-
-        public class DummyState
-        {
-            public List<object> actions = new List<object>();
-        }
-
-        public class FxFloatAction
-        {
-            public string name;
-        }
-
-        public class NonFloatAction
-        {
-            public string name;
-        }
-
         [Test]
         public void RemoveFxFloatFromSocket_RemovesOnlySelectedFxFloatAction()
         {
             var go = new GameObject("Socket");
-            var socket = go.AddComponent<DummySocket>();
-            var depthAction = new DummyDepthAction();
+            var socket = go.AddComponent<DepthParameterDetectorDummySocket>();
+            var depthAction = new DepthParameterDetectorDummyDepthAction();
             depthAction.actionSet.actions.Add(new FxFloatAction { name = "Keep_Depth" });
             depthAction.actionSet.actions.Add(new NonFloatAction { name = "Remove_Depth" });
             depthAction.actionSet.actions.Add(new FxFloatAction { name = "Remove_Depth" });
@@ -66,8 +67,8 @@ namespace AuroraKai.SPSTools.Tests
         public void RemoveFxFloatFromSocket_RemovesEmptyDepthAction()
         {
             var go = new GameObject("Socket");
-            var socket = go.AddComponent<DummySocket>();
-            var depthAction = new DummyDepthAction();
+            var socket = go.AddComponent<DepthParameterDetectorDummySocket>();
+            var depthAction = new DepthParameterDetectorDummyDepthAction();
             depthAction.actionSet.actions.Add(new FxFloatAction { name = "Only_Depth" });
             socket.depthActions2.Add(depthAction);
 
@@ -89,8 +90,8 @@ namespace AuroraKai.SPSTools.Tests
         public void RemoveFxFloatFromSocket_DoesNotRemoveEmptyActionWhenNameNotFound()
         {
             var go = new GameObject("Socket");
-            var socket = go.AddComponent<DummySocket>();
-            socket.depthActions2.Add(new DummyDepthAction());
+            var socket = go.AddComponent<DepthParameterDetectorDummySocket>();
+            socket.depthActions2.Add(new DepthParameterDetectorDummyDepthAction());
 
             try
             {
