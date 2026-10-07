@@ -22,11 +22,6 @@ namespace AuroraKai.SPSTools
         [SerializeField] private bool _showNormalAdvanced;
         [SerializeField] private bool _showBlendshapeAdvanced;
 
-        // Building the bulge path from a socket's SPS2 guided path
-        private const int GuidedPathWaypointCount = 8;
-        [SerializeField] private int _guidedPathSocketChoice;
-        [SerializeField] private GuidedPathProjection _guidedPathProjection =
-            GuidedPathProjection.Front;
 
         // Normal-delta visualization (Advanced → Show Normals).
         // Off by default; drawn via the scene-view overlay subscribed in
@@ -90,18 +85,52 @@ namespace AuroraKai.SPSTools
         protected override BulgeConfig CreateDefaultConfig() => CreateInstance<BulgeConfig>();
 
         protected override List<(float threshold, AnimationClip clip)> BuildPreviewThresholds()
-            => BulgeGenerator.BuildPreviewThresholds(config);
+            => BulgeGenerator.BuildPreviewThresholds(config, GetPreviewGuidedPath());
 
         protected override string GenerateAssets()
         {
             EnsureLegacyStackMigration();
-            return BulgeGenerator.Generate(config);
+            return BulgeGenerator.Generate(config,
+                new List<string> { config.depthParameter }, GetGuidedDepthMaps());
         }
 
         protected override string GenerateAssetsMulti(List<string> depthParameters)
         {
             EnsureLegacyStackMigration();
-            return BulgeGenerator.Generate(config, depthParameters);
+            return BulgeGenerator.Generate(config, depthParameters, GetGuidedDepthMaps());
+        }
+
+        /// <summary>
+        /// Depth maps for the enabled sockets' FX Floats that can follow an
+        /// SPS2 guided path, by parameter name.
+        /// </summary>
+        private Dictionary<string, GuidedPathDepthMap> GetGuidedDepthMaps()
+        {
+            var maps = new Dictionary<string, GuidedPathDepthMap>();
+            if (config.enabledSocketIndices == null) return maps;
+
+            foreach (int idx in config.enabledSocketIndices)
+            {
+                if (idx < 0 || idx >= detectedSockets.Count) continue;
+                var socket = detectedSockets[idx];
+                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
+                if (string.IsNullOrEmpty(parameter) || maps.ContainsKey(parameter)) continue;
+
+                var map = GuidedPathDepthMap.For(socket, parameter);
+                if (map != null) maps.Add(parameter, map);
+            }
+            return maps;
+        }
+
+        /// <summary>
+        /// The guided path the scene preview and graph follow: the first
+        /// enabled socket's, matching the parameter generation treats as primary.
+        /// </summary>
+        private GuidedPathDepthMap GetPreviewGuidedPath()
+        {
+            var parameters = GetEnabledDepthParameters();
+            if (parameters.Count == 0) return null;
+            return GetGuidedDepthMaps().TryGetValue(parameters[0], out var map) ? map : null;
         }
 
         protected override int ComputePreviewConfigHash()
@@ -115,6 +144,11 @@ namespace AuroraKai.SPSTools
                 h = h * 31 + config.bulgeWidth.GetHashCode();
                 h = h * 31 + config.PositionCount.GetHashCode();
                 h = h * 31 + (int)config.EffectiveDeformationMode;
+
+                // Moving a guided path stop or the drawn path moves the depths.
+                var layout = BulgeGenerator.ComputeDepthLayout(config, GetPreviewGuidedPath());
+                foreach (var (depth, pos) in layout.stops)
+                    h = (h * 31 + depth.GetHashCode()) * 31 + pos;
                 return h;
             }
         }
@@ -256,6 +290,8 @@ namespace AuroraKai.SPSTools
 
         private void DrawBulgeTravelRange()
         {
+            bool anyGuided = DrawGuidedPathFollowStatus();
+
             showAdvancedRange = EditorGUILayout.Foldout(showAdvancedRange, "Advanced: Depth Range");
             if (showAdvancedRange)
             {
@@ -265,7 +301,10 @@ namespace AuroraKai.SPSTools
                     "Restricts the depth range the bulge plays across. Lowering End " +
                     "also compensates when a socket's FX Float can't reach 1.0 at " +
                     "full insertion — set End to the saturation value so the full " +
-                    "animation plays within the reachable range.",
+                    "animation plays within the reachable range." +
+                    (anyGuided
+                        ? "\n\nSockets that follow an SPS2 guided path ignore this range."
+                        : ""),
                     MessageType.None);
 
                 EditorGUILayout.MinMaxSlider(TooltipContent.DepthRange,
@@ -290,6 +329,77 @@ namespace AuroraKai.SPSTools
                 }
                 EditorGUI.indentLevel--;
             }
+        }
+
+        /// <summary>
+        /// For each enabled socket with an SPS2 guided path, says whether the
+        /// bulge follows it and how many positions the plug tip reaches.
+        /// Returns true if any socket's bulge follows its path.
+        /// </summary>
+        private bool DrawGuidedPathFollowStatus()
+        {
+            if (config.enabledSocketIndices == null) return false;
+
+            bool anyGuided = false;
+            var seen = new HashSet<string>();
+            foreach (int idx in config.enabledSocketIndices)
+            {
+                if (idx < 0 || idx >= detectedSockets.Count) continue;
+                var socket = detectedSockets[idx];
+                if (!socket.HasGuidedPath) continue;
+                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
+                if (string.IsNullOrEmpty(parameter) || !seen.Add(parameter)) continue;
+
+                var map = GuidedPathDepthMap.For(socket, parameter);
+                if (map == null)
+                {
+                    EditorGUILayout.HelpBox(
+                        $"'{socket.DisplayName}': FX Float '{parameter}' uses plug-length " +
+                        "units, so the bulge does its full travel for any plug rather than " +
+                        "following the tip along the SPS2 guided path. Use Fit to Path in " +
+                        "SPS Sockets to follow the tip instead.",
+                        MessageType.None);
+                    continue;
+                }
+
+                var layout = BulgeGenerator.ComputeDepthLayout(config, map);
+                if (layout.guidedPath == null)
+                {
+                    // Otherwise there's no drawn path or bone chain yet.
+                    bool manual = config.EffectiveDeformationMode != DeformationMode.BoneScale &&
+                        config.positionBlendshapes != null && config.positionBlendshapes.Count > 0;
+                    if (!manual) continue;
+                    EditorGUILayout.HelpBox(
+                        $"'{socket.DisplayName}' has an SPS2 guided path, but manual " +
+                        "blendshapes don't say where on the body they are, so they're " +
+                        "spread evenly over the depth range instead. Generate them from " +
+                        "a drawn path, or use Bone Scale, to follow the path.",
+                        MessageType.Info);
+                    continue;
+                }
+
+                anyGuided = true;
+                int total = config.PositionCount;
+                string message =
+                    $"Following the SPS2 guided path of '{socket.DisplayName}': each " +
+                    "position peaks when the plug tip reaches the closest point on the path.";
+                var type = MessageType.Info;
+                if (layout.stops.Count == 0)
+                {
+                    message += "\nThe plug tip doesn't reach any position. Check that the " +
+                        "path runs alongside the bulge.";
+                    type = MessageType.Warning;
+                }
+                else if (layout.skippedPositions > 0)
+                {
+                    message += $"\n{layout.skippedPositions} of {total} positions are skipped: " +
+                        "they lie before the path's entrance, past the point where the FX " +
+                        "Float stops rising, or back the way the tip came.";
+                    type = MessageType.Warning;
+                }
+                EditorGUILayout.HelpBox(message, type);
+            }
+            return anyGuided;
         }
 
         // --- Bulge Settings ---
@@ -550,8 +660,6 @@ namespace AuroraKai.SPSTools
                             "Please select a Target Mesh above before drawing a path.", "OK");
                     }
                 }
-
-                DrawGuidedPathSource(hasPath);
 
                 float dispMM = Mathf.Round(config.blendshapeDisplacement * 1000f);
                 dispMM = EditorGUILayout.IntSlider(TooltipContent.Displacement, (int)dispMM, 1, 100);
@@ -901,130 +1009,6 @@ namespace AuroraKai.SPSTools
             }
         }
 
-        /// <summary>
-        /// Builds the bulge path from a socket's SPS2 guided path, so the bulge
-        /// follows the route SPS2 plugs bend along. Only shown when a detected
-        /// socket has a guided path.
-        /// </summary>
-        private void DrawGuidedPathSource(bool hasPath)
-        {
-            // Sockets the effect already uses come first, so they're the default.
-            var sockets = new List<DetectedSocket>();
-            if (config.enabledSocketIndices == null)
-                config.enabledSocketIndices = new List<int>();
-            foreach (int idx in config.enabledSocketIndices)
-            {
-                if (idx >= 0 && idx < detectedSockets.Count && detectedSockets[idx].HasGuidedPath)
-                    sockets.Add(detectedSockets[idx]);
-            }
-            foreach (var socket in detectedSockets)
-            {
-                if (socket.HasGuidedPath && !sockets.Contains(socket))
-                    sockets.Add(socket);
-            }
-            if (sockets.Count == 0) return;
-
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            EditorGUILayout.LabelField("From SPS2 Guided Path", EditorStyles.miniBoldLabel);
-
-            var names = new string[sockets.Count];
-            for (int i = 0; i < sockets.Count; i++)
-                names[i] = $"{sockets[i].DisplayName} ({sockets[i].gameObjectName})";
-            _guidedPathSocketChoice = Mathf.Clamp(_guidedPathSocketChoice, 0, sockets.Count - 1);
-            _guidedPathSocketChoice = EditorGUILayout.Popup(
-                TooltipContent.GuidedPathSocket, _guidedPathSocketChoice, names);
-            _guidedPathProjection = (GuidedPathProjection)EditorGUILayout.EnumPopup(
-                TooltipContent.GuidedPathProjection, _guidedPathProjection);
-
-            if (GUILayout.Button(hasPath ? "Rebuild Path from Socket" : "Build Path from Socket",
-                    GUILayout.Height(22)))
-            {
-                BuildPathFromGuidedPath(sockets[_guidedPathSocketChoice], hasPath);
-            }
-            EditorGUILayout.EndVertical();
-        }
-
-        private void BuildPathFromGuidedPath(DetectedSocket socket, bool hasPath)
-        {
-            if (targetRenderer == null || config.avatarRoot == null)
-            {
-                EditorUtility.DisplayDialog("SPS Bulge",
-                    "Please select a Target Mesh above before building a path.", "OK");
-                return;
-            }
-            if (hasPath && !EditorUtility.DisplayDialog("SPS Bulge",
-                    "Replace the current path with one built from the socket's guided path?",
-                    "Replace", "Cancel"))
-            {
-                return;
-            }
-
-            var guidedPath = SpsGuidedPath.FromSocket(socket.component);
-            var result = GuidedPathSurfaceProjector.Project(
-                guidedPath,
-                targetRenderer,
-                config.avatarRoot.transform,
-                _guidedPathProjection,
-                GuidedPathWaypointCount,
-                hasPath ? config.pathWaypoints[0].radius : 0.03f,
-                hasPath ? config.pathWaypoints[0].aspectRatio : 1f);
-            if (result == null)
-            {
-                EditorUtility.DisplayDialog("SPS Bulge",
-                    $"The guided path of '{socket.DisplayName}' doesn't pass through " +
-                    $"'{targetRenderer.name}' when projected to the " +
-                    $"{_guidedPathProjection.ToString().ToLowerInvariant()}. " +
-                    "Try another surface direction, or Nearest.", "OK");
-                return;
-            }
-
-            config.pathWaypoints = result.waypoints;
-            // A fitted FX Float reports the fraction of the guided path travelled,
-            // so the travel range is the part of the path that lies on this mesh.
-            config.depthRangeStart = result.startFraction;
-            config.depthRangeEnd = result.endFraction;
-
-            var notes = new List<string>();
-            int socketIdx = detectedSockets.IndexOf(socket);
-            if (socketIdx >= 0 && !config.enabledSocketIndices.Contains(socketIdx))
-            {
-                config.enabledSocketIndices.Add(socketIdx);
-                notes.Add($"Added '{socket.DisplayName}' to SPS Sockets.");
-            }
-
-            string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
-            if (!string.IsNullOrEmpty(parameter) &&
-                !DepthParameterDetector.IsFxFloatFittedToGuidedPath(
-                    socket.component, parameter, guidedPath) &&
-                EditorUtility.DisplayDialog("SPS Bulge",
-                    $"Fit FX Float '{parameter}' on '{socket.DisplayName}' to the guided path " +
-                    $"({guidedPath.Length:0.00} m)?\n\nIts depth animation will use Local units " +
-                    "over the path's length, so the bulge follows the plug tip along the path.",
-                    "Fit", "Not Now") &&
-                DepthParameterDetector.FitFxFloatToGuidedPath(socket.component, parameter, guidedPath))
-            {
-                notes.Add($"Fitted '{parameter}' to the guided path.");
-                RefreshSockets();
-            }
-
-            if (result.startFraction > 0f || result.endFraction < 1f)
-            {
-                notes.Add($"Depth range set to {result.startFraction:0.00}-{result.endFraction:0.00}, " +
-                    "the part of the guided path that projects onto the mesh.");
-            }
-            if (result.nearestFallbacks > 0)
-            {
-                notes.Add($"{result.nearestFallbacks} waypoint(s) fell back to the nearest vertex; " +
-                    "check them with Redraw Path.");
-            }
-
-            statusMessage = $"Built the bulge path from the guided path of '{socket.DisplayName}'." +
-                (notes.Count > 0 ? "\n" + string.Join("\n", notes) : "");
-            statusType = result.nearestFallbacks > 0 ? MessageType.Warning : MessageType.Info;
-            SceneView.RepaintAll();
-            Repaint();
-        }
-
         private void DrawManualBlendshapes()
         {
             EditorGUILayout.LabelField("Blendshape Names (ordered)", EditorStyles.miniBoldLabel);
@@ -1092,20 +1076,25 @@ namespace AuroraKai.SPSTools
                 new Vector3(graphX, refY),
                 new Vector3(graphX + graphW, refY));
 
-            int posCount = config.PositionCount;
-            if (posCount < 2) posCount = 3;
-
-            // Build the same threshold entries that the blend tree uses
-            // (temporary -- just for computing weights at each depth sample)
-            float rangeStart = config.depthRangeStart;
-            float rangeEnd = config.depthRangeEnd;
             float intensityScale = config.bulgeIntensity;
 
-            // Compute position depth thresholds (matching BuildThresholdEntries)
-            var posDepths = new float[posCount];
-            var computedDepths = BulgeGenerator.ComputePositionDepths(config, posCount);
-            for (int pos = 0; pos < posCount; pos++)
-                posDepths[pos] = computedDepths[pos];
+            // The same position depths the blend tree uses, following the
+            // previewed socket's guided path when it has one.
+            int posCount = config.PositionCount;
+            var layout = BulgeGenerator.ComputeDepthLayout(config, GetPreviewGuidedPath());
+            bool guided = layout.guidedPath != null;
+            if (posCount < 2 && !guided)
+            {
+                posCount = 3;
+                layout = new BulgeDepthLayout
+                {
+                    restUntil = config.depthRangeStart,
+                    holdFrom = config.depthRangeEnd
+                };
+                var evenDepths = BulgeGenerator.ComputePositionDepths(config, posCount);
+                for (int pos = 0; pos < posCount; pos++)
+                    layout.stops.Add((evenDepths[pos], pos));
+            }
 
             // For each position, compute its weight at each position-clip's depth
             // then simulate blend tree interpolation across the full 0->1 range
@@ -1137,8 +1126,7 @@ namespace AuroraKai.SPSTools
                     // At each position's depth threshold, that position has its full weight.
                     // Between thresholds, weights blend linearly.
                     float weight = ComputePositionWeightAtDepth(
-                        pos, depth, posDepths, posCount,
-                        rangeStart, rangeEnd, intensityScale);
+                        pos, depth, layout, intensityScale);
 
                     float yPixel = graphBottom - Mathf.Min(weight, 1.5f) / 1.5f * graphH;
                     _previewPoints[s] = new Vector3(xPixel, yPixel);
@@ -1150,22 +1138,25 @@ namespace AuroraKai.SPSTools
             }
 
             // Draw position threshold markers on the baseline
-            for (int pos = 0; pos < posCount; pos++)
+            foreach (var (stopDepth, stopPos) in layout.stops)
             {
-                float xPixel = graphX + posDepths[pos] * graphW;
-                var c = _previewPosColors[pos];
+                float xPixel = graphX + stopDepth * graphW;
+                var c = _previewPosColors[stopPos];
                 Handles.color = new Color(c.r, c.g, c.b, 0.5f);
                 Handles.DrawLine(
                     new Vector3(xPixel, graphBottom),
                     new Vector3(xPixel, graphBottom + 6f));
             }
 
-            // Depth range indicators
-            Handles.color = new Color(1f, 1f, 1f, 0.2f);
-            float rsX = graphX + rangeStart * graphW;
-            float reX = graphX + rangeEnd * graphW;
-            Handles.DrawLine(new Vector3(rsX, graphTop), new Vector3(rsX, graphBottom));
-            Handles.DrawLine(new Vector3(reX, graphTop), new Vector3(reX, graphBottom));
+            // Depth range indicators (a guided path sets its own depths)
+            if (!guided)
+            {
+                Handles.color = new Color(1f, 1f, 1f, 0.2f);
+                float rsX = graphX + config.depthRangeStart * graphW;
+                float reX = graphX + config.depthRangeEnd * graphW;
+                Handles.DrawLine(new Vector3(rsX, graphTop), new Vector3(rsX, graphBottom));
+                Handles.DrawLine(new Vector3(reX, graphTop), new Vector3(reX, graphBottom));
+            }
 
             // Labels
             var labelStyle = new GUIStyle(EditorStyles.miniLabel)
@@ -1207,51 +1198,35 @@ namespace AuroraKai.SPSTools
         /// has at a given depth value. Mirrors the actual threshold interpolation.
         /// </summary>
         private float ComputePositionWeightAtDepth(
-            int pos, float depth, float[] posDepths, int posCount,
-            float rangeStart, float rangeEnd,
-            float intensityScale)
+            int pos, float depth, BulgeDepthLayout layout, float intensityScale)
         {
-            if (depth <= rangeStart) return 0f;
+            var stops = layout.stops;
+            if (stops.Count == 0 || depth <= layout.restUntil) return 0f;
 
-            // Find which two position thresholds bracket this depth
-            int lowerPos = -1;
-            int upperPos = 0;
-            float lowerDepth = rangeStart;
-            float upperDepth = posDepths[0];
-
-            for (int p = 0; p < posCount; p++)
+            // Find the deepest position threshold at or before this depth
+            int lower = -1;
+            for (int i = 0; i < stops.Count; i++)
             {
-                if (depth >= posDepths[p])
-                {
-                    lowerPos = p;
-                    lowerDepth = posDepths[p];
-                    upperPos = p + 1;
-                    upperDepth = (p + 1 < posCount) ? posDepths[p + 1] : rangeEnd;
-                }
+                if (depth >= stops[i].depth)
+                    lower = i;
             }
+
+            float lowerDepth = lower >= 0 ? stops[lower].depth : layout.restUntil;
+            float lowerWeight = lower >= 0
+                ? GetClipWeightForPosition(pos, stops[lower].position, intensityScale)
+                : 0f;
+
+            // After the last position: hold at its clip
+            if (lower + 1 >= stops.Count) return lowerWeight;
+
+            float upperDepth = stops[lower + 1].depth;
+            float upperWeight = GetClipWeightForPosition(
+                pos, stops[lower + 1].position, intensityScale);
 
             float range = upperDepth - lowerDepth;
             float t = range > 0.0001f
-                ? (depth - lowerDepth) / range
+                ? Mathf.Clamp01((depth - lowerDepth) / range)
                 : 0f;
-            t = Mathf.Clamp01(t);
-
-            float lowerWeight = (lowerPos >= 0)
-                ? GetClipWeightForPosition(pos, lowerPos, intensityScale)
-                : 0f;
-
-            float upperWeight;
-            if (upperPos < posCount)
-                upperWeight = GetClipWeightForPosition(pos, upperPos, intensityScale);
-            else if (depth > posDepths[posCount - 1])
-            {
-                // After last position: hold at last clip
-                int offset = Mathf.Abs(pos - (posCount - 1));
-                upperWeight = config.GetBellCurveWeight(offset) * intensityScale;
-            }
-            else
-                upperWeight = 0f;
-
             return Mathf.Max(0f, Mathf.Lerp(lowerWeight, upperWeight, t));
         }
 

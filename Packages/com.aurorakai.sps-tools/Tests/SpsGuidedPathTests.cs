@@ -162,47 +162,157 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
-        public void Surface_ProjectsFromInsideOntoTheFaceItLeavesThrough()
+        public void ClosestFraction_ReturnsArcLengthFractionOfNearestPoint()
         {
-            var surface = CreateUnitCubeSurface();
+            var path = SpsGuidedPath.FromSocket(CreateStraightSocket(0.2f, 0.5f));
 
-            Assert.IsTrue(surface.TryProject(Vector3.zero, Vector3.forward,
-                out Vector3 point, out Vector3 normal));
-            Assert.AreEqual(0.5f, point.z, 1e-4f);
-            Assert.Greater(Vector3.Dot(normal, Vector3.forward), 0.9f);
+            Assert.AreEqual(0.5f, path.ClosestFraction(new Vector3(0.1f, 0f, -0.25f)), 1e-3f);
+            Assert.AreEqual(0f, path.ClosestFraction(new Vector3(0f, 0.3f, 0.2f)), 1e-3f);
+            Assert.AreEqual(1f, path.ClosestFraction(new Vector3(0f, 0f, -0.9f)), 1e-3f);
         }
 
         [Test]
-        public void Surface_RejectsPointsOutsideTheMesh()
+        public void DepthMap_FittedRangeReportsFractionOfPath()
         {
-            var surface = CreateUnitCubeSurface();
+            var path = SpsGuidedPath.FromSocket(CreateStraightSocket(0.5f));
+            var map = new GuidedPathDepthMap(path, "Depth", "Socket",
+                path.LocalLength, new Vector2(-path.LocalLength, 0f));
 
-            // Behind the cube, the first hit is a face looking back at the point.
-            Assert.IsFalse(surface.TryProject(new Vector3(0f, 0f, -2f), Vector3.forward,
-                out _, out _));
-            // In front of the cube, nothing is hit.
-            Assert.IsFalse(surface.TryProject(new Vector3(0f, 0f, 2f), Vector3.forward,
-                out _, out _));
+            Assert.AreEqual(0f, map.ValueAtFraction(0f), 1e-4f);
+            Assert.AreEqual(0.3f, map.ValueAtFraction(0.3f), 1e-4f);
+            Assert.AreEqual(1f, map.ValueAtFraction(1f), 1e-4f);
         }
 
         [Test]
-        public void FindCoveredRange_TrimsPathEndsOutsideTheMesh()
+        public void DepthMap_ShortRangeSaturatesPartWayAlongPath()
         {
-            // Straight path from y=1 down to y=-1 through a unit cube.
-            var socket = Create("Socket", new Vector3(0f, 1f, 0f))
-                .AddComponent<GuidedPathDummySocket>();
-            socket.transform.rotation = Quaternion.LookRotation(Vector3.up);
-            var stop = Create("Stop", new Vector3(0f, -1f, 0f));
-            stop.transform.rotation = Quaternion.LookRotation(Vector3.up);
-            socket.guidedPathStops.Add(new GuidedPathDummyStop { transform = stop.transform });
-            var path = SpsGuidedPath.FromSocket(socket);
+            // VRCFury's default (-0.25, 0) m on a 0.5 m path
+            var path = SpsGuidedPath.FromSocket(CreateStraightSocket(0.5f));
+            var map = new GuidedPathDepthMap(path, "Depth", "Socket",
+                path.Length, new Vector2(-0.25f, 0f));
 
-            var result = GuidedPathSurfaceProjector.FindCoveredRange(
-                path, CreateUnitCubeSurface(), Vector3.forward);
+            Assert.AreEqual(0.4f, map.ValueAtFraction(0.2f), 1e-3f);
+            Assert.AreEqual(1f, map.ValueAtFraction(0.5f), 1e-3f);
+            Assert.AreEqual(1f, map.ValueAtFraction(0.8f), 1e-3f);
+        }
 
-            Assert.IsNotNull(result);
-            Assert.AreEqual(0.25f, result.startFraction, 0.03f);
-            Assert.AreEqual(0.75f, result.endFraction, 0.03f);
+        [Test]
+        public void GuidedLayout_OrdersPositionsByDepthFromEitherEnd()
+        {
+            var forward = BulgeGenerator.BuildGuidedLayout(new List<float> { 0.2f, 0.5f, 0.8f });
+            Assert.AreEqual(new[] { 0, 1, 2 }, Positions(forward));
+            Assert.AreEqual(0.05f, forward.restUntil, 1e-4f);
+            Assert.AreEqual(0, forward.skippedPositions);
+
+            var reversed = BulgeGenerator.BuildGuidedLayout(new List<float> { 0.8f, 0.5f, 0.2f });
+            Assert.AreEqual(new[] { 2, 1, 0 }, Positions(reversed));
+            Assert.AreEqual(0.2f, reversed.stops[0].depth, 1e-4f);
+        }
+
+        [Test]
+        public void GuidedLayout_SkipsPositionsTheTipDoesNotReachOnTheirOwn()
+        {
+            // Before the entrance (0), then past where the FX Float saturates (1).
+            var layout = BulgeGenerator.BuildGuidedLayout(
+                new List<float> { 0f, 0.4f, 1f, 1f, 1f });
+
+            Assert.AreEqual(new[] { 1, 2 }, Positions(layout));
+            Assert.AreEqual(3, layout.skippedPositions);
+        }
+
+        [Test]
+        public void BulgeThresholds_FollowGuidedPathAlongsideDrawnPath()
+        {
+            var avatar = Create("Avatar", Vector3.zero);
+            var path = SpsGuidedPath.FromSocket(CreateStraightSocket(0.5f));
+            var map = new GuidedPathDepthMap(path, "Depth", "Socket",
+                path.LocalLength, new Vector2(-path.LocalLength, 0f));
+
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            try
+            {
+                config.avatarRoot = avatar;
+                config.rendererPath = "Body";
+                config.autoPositionCount = 3;
+                // Drawn on the surface 10 cm out from the path, entrance end last.
+                config.pathWaypoints = new List<PathWaypoint>
+                {
+                    new PathWaypoint { localPosition = new Vector3(0.1f, 0f, -0.4f) },
+                    new PathWaypoint { localPosition = new Vector3(0.1f, 0f, -0.1f) },
+                };
+
+                var layout = BulgeGenerator.ComputeDepthLayout(config, map);
+                Assert.AreSame(map, layout.guidedPath);
+                Assert.AreEqual(new[] { 2, 1, 0 }, Positions(layout));
+
+                // Generating stores the generated names; they still follow the path.
+                config.positionBlendshapes = new List<string> { "Gen_Pos1", "Gen_Pos2", "Gen_Pos3" };
+                Assert.AreEqual(new[] { 2, 1, 0 },
+                    Positions(BulgeGenerator.ComputeDepthLayout(config, map)));
+
+                var entries = BulgeGenerator.BuildPreviewThresholds(config, map);
+                var thresholds = new List<float>();
+                foreach (var entry in entries) thresholds.Add(entry.threshold);
+                CollectionAssert.AreEqual(new[] { 0f, 0.05f, 0.2f, 0.5f, 0.8f, 1f },
+                    thresholds, new FloatTolerance(1e-3f));
+                Assert.AreSame(entries[4].clip, entries[5].clip,
+                    "The deepest position holds to depth 1.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
+        public void BulgeThresholds_ManualBlendshapesIgnoreGuidedPath()
+        {
+            var path = SpsGuidedPath.FromSocket(CreateStraightSocket(0.5f));
+            var map = new GuidedPathDepthMap(path, "Depth", "Socket",
+                path.LocalLength, new Vector2(-path.LocalLength, 0f));
+
+            var config = ScriptableObject.CreateInstance<BulgeConfig>();
+            try
+            {
+                config.avatarRoot = Create("Avatar", Vector3.zero);
+                config.positionBlendshapes = new List<string> { "A", "B" };
+                // A stale path with a different position count isn't where these are.
+                config.autoPositionCount = 3;
+                config.pathWaypoints = new List<PathWaypoint>
+                {
+                    new PathWaypoint { localPosition = new Vector3(0.1f, 0f, -0.4f) },
+                    new PathWaypoint { localPosition = new Vector3(0.1f, 0f, -0.1f) },
+                };
+
+                var layout = BulgeGenerator.ComputeDepthLayout(config, map);
+
+                Assert.IsNull(layout.guidedPath);
+                Assert.AreEqual(0.25f, layout.stops[0].depth, 1e-4f);
+                Assert.AreEqual(0.75f, layout.stops[1].depth, 1e-4f);
+            }
+            finally
+            {
+                Object.DestroyImmediate(config);
+            }
+        }
+
+        private static int[] Positions(BulgeDepthLayout layout)
+        {
+            var positions = new int[layout.stops.Count];
+            for (int i = 0; i < positions.Length; i++)
+                positions[i] = layout.stops[i].position;
+            return positions;
+        }
+
+        private class FloatTolerance : System.Collections.IComparer
+        {
+            private readonly float tolerance;
+            public FloatTolerance(float tolerance) { this.tolerance = tolerance; }
+            public int Compare(object x, object y)
+            {
+                float a = (float)x, b = (float)y;
+                return Mathf.Abs(a - b) <= tolerance ? 0 : a.CompareTo(b);
+            }
         }
 
         [Test]
@@ -233,13 +343,6 @@ namespace AuroraKai.SPSTools.Tests
 
             Assert.AreEqual("Plugs", depthAction.units.ToString());
             Assert.AreEqual(new Vector2(-1f, 0f), depthAction.range);
-        }
-
-        private static GuidedPathSurfaceProjector.Surface CreateUnitCubeSurface()
-        {
-            var cube = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
-            return new GuidedPathSurfaceProjector.Surface(
-                cube.vertices, cube.normals, cube.triangles);
         }
     }
 }

@@ -985,7 +985,8 @@ namespace AuroraKai.SPSTools
 
         /// <summary>
         /// Enabled sockets with an SPS2 guided path whose selected FX Float
-        /// isn't fitted to it.
+        /// isn't fitted to it. FX Floats in plug-length units are left out:
+        /// they deliberately give every plug the full travel instead.
         /// </summary>
         protected List<string> GetUnfittedGuidedPathSockets()
         {
@@ -1000,6 +1001,12 @@ namespace AuroraKai.SPSTools
 
                 string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
                 if (string.IsNullOrEmpty(parameter)) continue;
+                if (DepthParameterDetector.TryGetFxFloatDepthRange(
+                        socket.component, parameter, out string units, out _) &&
+                    units == "Plugs")
+                {
+                    continue;
+                }
                 if (!DepthParameterDetector.IsFxFloatFittedToGuidedPath(
                         socket.component, parameter, SpsGuidedPath.FromSocket(socket.component)))
                 {
@@ -1626,8 +1633,8 @@ namespace AuroraKai.SPSTools
                     {
                         statusMessage += $"\n{string.Join(", ", unfitted)} " +
                             (unfitted.Count == 1 ? "has" : "have") +
-                            " an SPS2 guided path, but the FX Float doesn't measure depth " +
-                            "along it, so the effect may not follow the plug tip. " +
+                            " an SPS2 guided path, but the FX Float isn't fitted to it, so the " +
+                            "effect may not follow the plug tip all the way along. " +
                             "Use \"Fit to Path\" in SPS Sockets.";
                         statusType = MessageType.Warning;
                     }

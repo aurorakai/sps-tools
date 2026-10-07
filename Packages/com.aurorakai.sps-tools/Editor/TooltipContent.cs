@@ -32,10 +32,6 @@ namespace AuroraKai.SPSTools
             "Start", "Depth parameter value where the effect begins.");
         public static readonly GUIContent DepthRangeEnd = new GUIContent(
             "End", "Depth parameter value where the effect reaches its deepest position. Lower this to match your socket's FX Float saturation point when it can't reach 1.0 at full insertion.");
-        public static readonly GUIContent GuidedPathSocket = new GUIContent(
-            "Socket", "SPS Socket whose SPS2 guided path the bulge should follow.");
-        public static readonly GUIContent GuidedPathProjection = new GUIContent(
-            "Surface", "Which side of the body the guided path is projected onto, relative to the avatar. Nearest uses the closest vertex to each point on the path.");
         public static readonly GUIContent SnapToVertices = new GUIContent(
             "Snap to Vertices", "Snap path waypoints to the nearest mesh vertex for precise placement.");
         public static readonly GUIContent ConfigName = new GUIContent(

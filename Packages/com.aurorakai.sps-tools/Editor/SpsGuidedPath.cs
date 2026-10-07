@@ -174,6 +174,34 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Fraction of the path's arc length (0 = entrance, 1 = end) at the
+        /// point on the path closest to <paramref name="worldPoint"/>.
+        /// </summary>
+        public float ClosestFraction(Vector3 worldPoint)
+        {
+            if (Length <= 1e-8f) return 0f;
+
+            float bestSqr = float.MaxValue;
+            float bestLength = 0f;
+            for (int i = 1; i < points.Count; i++)
+            {
+                Vector3 a = points[i - 1];
+                Vector3 ab = points[i] - a;
+                float abSqr = ab.sqrMagnitude;
+                float t = abSqr > 1e-12f
+                    ? Mathf.Clamp01(Vector3.Dot(worldPoint - a, ab) / abSqr)
+                    : 0f;
+                float sqr = (a + ab * t - worldPoint).sqrMagnitude;
+                if (sqr < bestSqr)
+                {
+                    bestSqr = sqr;
+                    bestLength = Mathf.Lerp(cumulative[i - 1], cumulative[i], t);
+                }
+            }
+            return bestLength / Length;
+        }
+
+        /// <summary>
         /// Returns <paramref name="count"/> points evenly spaced by arc length,
         /// from the entrance to the end.
         /// </summary>

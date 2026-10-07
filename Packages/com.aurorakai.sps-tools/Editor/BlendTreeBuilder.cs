@@ -35,11 +35,35 @@ namespace AuroraKai.SPSTools
             List<(float threshold, AnimationClip clip)> entries,
             string savePath)
         {
+            var layers = new List<(string parameter, List<(float threshold, AnimationClip clip)> entries)>();
+            foreach (var paramName in parameterNames)
+                layers.Add((paramName, entries));
+            return CreateLayeredBlendTree(controllerName, layers, layerName, savePath);
+        }
+
+        /// <summary>
+        /// Creates a controller with one blend tree layer per parameter, each
+        /// with its own thresholds. Used when sockets reach the same positions
+        /// at different depths, such as sockets with SPS2 guided paths.
+        /// </summary>
+        public static AnimatorController CreateLayeredBlendTree(
+            string controllerName,
+            List<(string parameter, List<(float threshold, AnimationClip clip)> entries)> layerEntries,
+            string layerName,
+            string savePath)
+        {
             var controller = AnimatorController.CreateAnimatorControllerAtPath(savePath);
 
-            var sortedEntries = new List<(float threshold, AnimationClip clip)>(entries);
-            sortedEntries.Sort((a, b) => a.threshold.CompareTo(b.threshold));
-            DedupAdjacentThresholds(sortedEntries);
+            var parameterNames = new List<string>();
+            var sortedLayerEntries = new List<List<(float threshold, AnimationClip clip)>>();
+            foreach (var (parameter, entries) in layerEntries)
+            {
+                var sortedEntries = new List<(float threshold, AnimationClip clip)>(entries);
+                sortedEntries.Sort((a, b) => a.threshold.CompareTo(b.threshold));
+                DedupAdjacentThresholds(sortedEntries);
+                parameterNames.Add(parameter);
+                sortedLayerEntries.Add(sortedEntries);
+            }
 
             // Add all parameters
             foreach (var paramName in parameterNames)
@@ -94,7 +118,7 @@ namespace AuroraKai.SPSTools
 
                 blendState.writeDefaultValues = true;
 
-                foreach (var (threshold, clip) in sortedEntries)
+                foreach (var (threshold, clip) in sortedLayerEntries[layerIdx])
                     blendTree.AddChild(clip, threshold);
 
                 sm.defaultState = blendState;
