@@ -29,6 +29,15 @@ namespace AuroraKai.SPSTools
         public string depthParameter =>
             depthFxFloats.Count > 0 ? depthFxFloats[0] : "";
 
+        /// <summary>
+        /// The socket's SPS2 guided path as it was when the socket was detected,
+        /// or null for a socket without one. Call <see cref="SpsGuidedPath.FromSocket"/>
+        /// on <see cref="component"/> for current world positions.
+        /// </summary>
+        public SpsGuidedPath guidedPath;
+
+        public bool HasGuidedPath => guidedPath != null;
+
         public string DisplayName =>
             !string.IsNullOrEmpty(socketName) ? socketName : gameObjectName;
 
@@ -58,6 +67,10 @@ namespace AuroraKai.SPSTools
         // Resolved "Plugs" enum value, set on new depth actions so the FX Float
         // sweeps 0..1 across the plug's insertion depth regardless of plug scale.
         private static object s_unitsPlugsValue;
+
+        // Resolved "Local" enum value, used on sockets with an SPS2 guided path
+        // so the FX Float sweeps 0..1 as the tip travels the whole path.
+        private static object s_unitsLocalValue;
 
         /// <summary>
         /// Finds all SPS Sockets on the avatar by scanning for VRCFuryHapticSocket components.
@@ -241,8 +254,13 @@ namespace AuroraKai.SPSTools
         ///     → DepthActionNew.actionSet (State)
         ///       → State.actions (List of Action, [SerializeReference])
         ///         → FxFloatAction { name, value }
+        ///
+        /// Pass the socket's <paramref name="guidedPath"/> to fit the range to
+        /// an SPS2 guided path (see <see cref="ConfigureDepthRange"/>).
         /// </summary>
-        public static bool AddFxFloatToSocket(Component socketComponent, string parameterName)
+        public static bool AddFxFloatToSocket(
+            Component socketComponent, string parameterName,
+            SpsGuidedPath guidedPath = null)
         {
             if (socketComponent == null || string.IsNullOrEmpty(parameterName))
                 return false;
@@ -283,19 +301,8 @@ namespace AuroraKai.SPSTools
 
                 object depthAction = Activator.CreateInstance(depthActionType);
 
-                // VRCFury's defaults are range=(-0.25, 0) in Meters — scale-dependent,
-                // so a short plug saturates the FX param before reaching 1.0. Prefer
-                // Plugs units with range (-1, 0): the parameter sweeps 0→1 across the
-                // plug's full insertion depth regardless of plug size. Fall back to
-                // VRCFury's defaults on older versions where Plugs isn't defined.
-                bool configuredPlugs = false;
-                if (s_unitsPlugsValue != null &&
-                    SetFieldIfExists(depthAction, "units", s_unitsPlugsValue))
-                {
-                    SetFieldIfExists(depthAction, "range", new Vector2(-1f, 0f));
-                    configuredPlugs = true;
-                }
-                if (!configuredPlugs)
+                string rangeDesc = ConfigureDepthRange(depthAction, guidedPath);
+                if (rangeDesc == null)
                 {
                     Debug.LogWarning("[SPS Effects] DepthActionUnits.Plugs not available; " +
                         "socket depth action will use VRCFury defaults. You may need to adjust " +
@@ -346,9 +353,7 @@ namespace AuroraKai.SPSTools
                     UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
                         socketComponent.gameObject.scene);
 
-                string rangeDesc = configuredPlugs
-                    ? "range=(-1, 0) Plugs"
-                    : "VRCFury default range (Meters)";
+                rangeDesc = rangeDesc ?? "VRCFury default range (Meters)";
                 Debug.Log($"[SPS Effects] Added depth FX Float '{parameterName}' to " +
                     $"SPS Socket on '{socketComponent.gameObject.name}' ({rangeDesc}).");
                 return true;
@@ -358,6 +363,163 @@ namespace AuroraKai.SPSTools
                 Debug.LogError($"[SPS Effects] Failed to add FX Float to socket: {e.Message}\n{e.StackTrace}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Sets units and range on a new or existing depth action. Returns a
+        /// description of what was set, or null if neither option is available
+        /// and VRCFury's defaults stay.
+        ///
+        /// VRCFury's defaults are range=(-0.25, 0) in Meters — scale-dependent,
+        /// so a short plug saturates the FX param before reaching 1.0. Without a
+        /// guided path we prefer Plugs units with range (-1, 0): the parameter
+        /// sweeps 0→1 across the plug's full insertion depth regardless of plug
+        /// size.
+        ///
+        /// With an SPS2 guided path the plug tip follows the path, so depth means
+        /// distance travelled along it. Local units with range (-pathLength, 0)
+        /// make the parameter sweep 0→1 from the entrance to the end of the path
+        /// for any plug long enough to reach it, and stay correct when the avatar
+        /// is scaled in game.
+        /// </summary>
+        internal static string ConfigureDepthRange(object depthAction, SpsGuidedPath guidedPath)
+        {
+            ResolveTypes();
+
+            if (guidedPath != null && guidedPath.LocalLength > 0f &&
+                s_unitsLocalValue != null &&
+                SetFieldIfExists(depthAction, "units", s_unitsLocalValue))
+            {
+                SetFieldIfExists(depthAction, "range",
+                    new Vector2(-guidedPath.LocalLength, 0f));
+                return $"range=(-{guidedPath.LocalLength:0.###}, 0) Local, fitted to the SPS guided path";
+            }
+
+            if (s_unitsPlugsValue != null &&
+                SetFieldIfExists(depthAction, "units", s_unitsPlugsValue))
+            {
+                SetFieldIfExists(depthAction, "range", new Vector2(-1f, 0f));
+                return "range=(-1, 0) Plugs";
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Reads the units and range of the first depth action that sets
+        /// <paramref name="parameterName"/>. Returns false if none does.
+        /// </summary>
+        public static bool TryGetFxFloatDepthRange(
+            Component socketComponent, string parameterName,
+            out string units, out Vector2 range)
+        {
+            units = "";
+            range = Vector2.zero;
+
+            foreach (object depthAction in GetDepthActionsWithFxFloat(socketComponent, parameterName))
+            {
+                units = GetFieldValueRecursive(depthAction, "units")?.ToString() ?? "";
+                range = GetFieldValueRecursive(depthAction, "range") is Vector2 r ? r : Vector2.zero;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True when the FX Float's depth action already sweeps 0→1 across the
+        /// guided path (Local units, range matching the path length within 1%).
+        /// </summary>
+        public static bool IsFxFloatFittedToGuidedPath(
+            Component socketComponent, string parameterName, SpsGuidedPath guidedPath)
+        {
+            if (guidedPath == null) return false;
+            if (!TryGetFxFloatDepthRange(socketComponent, parameterName,
+                    out string units, out Vector2 range))
+            {
+                return false;
+            }
+
+            float span = Mathf.Abs(range.y - range.x);
+            return units == "Local" &&
+                   Mathf.Abs(Mathf.Max(range.x, range.y)) < 1e-4f &&
+                   Mathf.Abs(span - guidedPath.LocalLength) <= guidedPath.LocalLength * 0.01f;
+        }
+
+        /// <summary>
+        /// Refits every depth action that sets <paramref name="parameterName"/>
+        /// to the socket's guided path (see <see cref="ConfigureDepthRange"/>).
+        /// Other settings on the depth action, such as Allow Self and smoothing,
+        /// are kept. Depth actions that also drive other actions are left alone
+        /// and reported as a warning, since changing their range would change
+        /// those actions too.
+        /// </summary>
+        public static bool FitFxFloatToGuidedPath(
+            Component socketComponent, string parameterName, SpsGuidedPath guidedPath)
+        {
+            if (socketComponent == null || string.IsNullOrEmpty(parameterName) ||
+                guidedPath == null)
+            {
+                return false;
+            }
+
+            var depthActions = GetDepthActionsWithFxFloat(socketComponent, parameterName);
+            if (depthActions.Count == 0) return false;
+
+            Undo.RegisterCompleteObjectUndo(socketComponent, "Fit SPS Depth FX Float to Path");
+
+            bool fitted = false;
+            foreach (object depthAction in depthActions)
+            {
+                object state = GetFieldValueRecursive(depthAction, "actionSet");
+                if (GetFieldValueRecursive(state, "actions") is IList actions &&
+                    actions.Count > 1)
+                {
+                    Debug.LogWarning($"[SPS Effects] Depth animation for '{parameterName}' on " +
+                        $"'{socketComponent.gameObject.name}' also drives other actions; " +
+                        "not changing its range. Move the FX Float to its own depth animation " +
+                        "to fit it to the guided path.");
+                    continue;
+                }
+
+                string rangeDesc = ConfigureDepthRange(depthAction, guidedPath);
+                if (rangeDesc == null) continue;
+                fitted = true;
+                Debug.Log($"[SPS Effects] Fitted depth FX Float '{parameterName}' on " +
+                    $"'{socketComponent.gameObject.name}' ({rangeDesc}).");
+            }
+
+            if (!fitted) return false;
+
+            EditorUtility.SetDirty(socketComponent);
+            if (!Application.isPlaying)
+                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
+                    socketComponent.gameObject.scene);
+            return true;
+        }
+
+        private static List<object> GetDepthActionsWithFxFloat(
+            Component socketComponent, string parameterName)
+        {
+            var result = new List<object>();
+            if (socketComponent == null || string.IsNullOrEmpty(parameterName))
+                return result;
+
+            if (!(GetFieldValueRecursive(socketComponent, "depthActions2") is IList depthList))
+                return result;
+
+            foreach (object depthAction in depthList)
+            {
+                object state = GetFieldValueRecursive(depthAction, "actionSet");
+                if (!(GetFieldValueRecursive(state, "actions") is IList actions)) continue;
+
+                foreach (object action in actions)
+                {
+                    if (!IsFxFloatActionNamed(action, parameterName)) continue;
+                    result.Add(depthAction);
+                    break;
+                }
+            }
+            return result;
         }
 
         public static bool RemoveFxFloatFromSocket(
@@ -540,6 +702,13 @@ namespace AuroraKai.SPSTools
                         "[SPS Effects] VRCFury DepthActionUnits has no 'Plugs' value; " +
                         $"socket depth actions will use VRCFury defaults. {e.Message}");
                 }
+                try { s_unitsLocalValue = Enum.Parse(depthActionUnitsType, "Local"); }
+                catch (ArgumentException e)
+                {
+                    Debug.LogWarning(
+                        "[SPS Effects] VRCFury DepthActionUnits has no 'Local' value; " +
+                        $"depth FX Floats can't be fitted to SPS guided paths. {e.Message}");
+                }
             }
 
             // Only latch once every type AddFxFloatToSocket needs is resolved.
@@ -599,6 +768,8 @@ namespace AuroraKai.SPSTools
             // Scan depthActions2 for FxFloatAction entries
             socket.depthFxFloats = ExtractFxFloatsFromDepthActions(comp);
 
+            socket.guidedPath = SpsGuidedPath.FromSocket(comp);
+
             return socket;
         }
 
@@ -645,7 +816,7 @@ namespace AuroraKai.SPSTools
         // Reflection helpers
         // =====================================================================
 
-        private static object GetFieldValueRecursive(object obj, string fieldName)
+        internal static object GetFieldValueRecursive(object obj, string fieldName)
         {
             if (obj == null) return null;
             var type = obj.GetType();
@@ -660,7 +831,7 @@ namespace AuroraKai.SPSTools
             return null;
         }
 
-        private static bool SetFieldIfExists(object obj, string fieldName, object value)
+        internal static bool SetFieldIfExists(object obj, string fieldName, object value)
         {
             if (obj == null) return false;
             var type = obj.GetType();

@@ -766,7 +766,8 @@ namespace AuroraKai.SPSTools
                     for (int i = 0; i < availableIndices.Count; i++)
                     {
                         var socket = detectedSockets[availableIndices[i]];
-                        displayNames[i] = $"{socket.DisplayName} ({socket.gameObjectName})";
+                        displayNames[i] = $"{socket.DisplayName} ({socket.gameObjectName})" +
+                            (socket.HasGuidedPath ? " - SPS2 path" : "");
                     }
 
                     if (socketDropdownIndex >= availableIndices.Count)
@@ -829,7 +830,8 @@ namespace AuroraKai.SPSTools
                                         DepthParameterDetector.SuggestParameterName(socket),
                                         socket);
                                 if (DepthParameterDetector.AddFxFloatToSocket(
-                                        socket.component, suggested))
+                                        socket.component, suggested,
+                                        SpsGuidedPath.FromSocket(socket.component)))
                                 {
                                     SocketFxFloatSelectionUtility.SetSelectedParameter(
                                         config, socket, suggested);
@@ -858,17 +860,23 @@ namespace AuroraKai.SPSTools
                                 }
                             }
                             EditorGUILayout.EndHorizontal();
+
+                            DrawGuidedPathStatus(socket,
+                                SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket));
                         }
                         else
                         {
                             EditorGUILayout.LabelField("No FX Float set", EditorStyles.miniLabel);
+                            DrawGuidedPathStatus(socket, null);
                             string suggested =
                                 SocketFxFloatSelectionUtility.MakeUniqueParameterName(
                                     DepthParameterDetector.SuggestParameterName(socket),
                                     socket);
                             if (GUILayout.Button($"Add \"{suggested}\"", GUILayout.Height(18)))
                             {
-                                if (DepthParameterDetector.AddFxFloatToSocket(socket.component, suggested))
+                                if (DepthParameterDetector.AddFxFloatToSocket(
+                                        socket.component, suggested,
+                                        SpsGuidedPath.FromSocket(socket.component)))
                                 {
                                     SocketFxFloatSelectionUtility.SetSelectedParameter(
                                         config, socket, suggested);
@@ -935,6 +943,70 @@ namespace AuroraKai.SPSTools
             var socket = detectedSockets[selectedSocketIndex];
             if (!string.IsNullOrEmpty(socket.depthParameter))
                 config.depthParameter = socket.depthParameter;
+        }
+
+        /// <summary>
+        /// Shows a socket's SPS2 guided path and whether its depth FX Float
+        /// measures distance along it, with a button to fit it when it doesn't.
+        /// </summary>
+        private void DrawGuidedPathStatus(DetectedSocket socket, string parameterName)
+        {
+            if (!socket.HasGuidedPath) return;
+            var path = SpsGuidedPath.FromSocket(socket.component);
+            if (path == null) return;
+
+            string info = $"SPS2 guided path: {path.StopCount} " +
+                $"stop{(path.StopCount == 1 ? "" : "s")}, {path.Length:0.00} m";
+            bool fitted = !string.IsNullOrEmpty(parameterName) &&
+                DepthParameterDetector.IsFxFloatFittedToGuidedPath(
+                    socket.component, parameterName, path);
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(
+                fitted ? info + " (FX Float follows the path)" : info,
+                EditorStyles.miniLabel);
+            if (!string.IsNullOrEmpty(parameterName) && !fitted &&
+                GUILayout.Button(FitToPathContent, EditorStyles.miniButton, GUILayout.Width(80)))
+            {
+                if (DepthParameterDetector.FitFxFloatToGuidedPath(
+                        socket.component, parameterName, path))
+                {
+                    RefreshSockets();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static readonly GUIContent FitToPathContent = new GUIContent(
+            "Fit to Path",
+            "Sets this FX Float's depth animation to Local units over the guided path's " +
+            "length, so 0 is the entrance and 1 is the end of the path. SPS2 plugs bend " +
+            "along the path, so this keeps the effect lined up with the plug tip.");
+
+        /// <summary>
+        /// Enabled sockets with an SPS2 guided path whose selected FX Float
+        /// isn't fitted to it.
+        /// </summary>
+        protected List<string> GetUnfittedGuidedPathSockets()
+        {
+            var result = new List<string>();
+            if (config?.enabledSocketIndices == null) return result;
+
+            foreach (int idx in config.enabledSocketIndices)
+            {
+                if (idx < 0 || idx >= detectedSockets.Count) continue;
+                var socket = detectedSockets[idx];
+                if (!socket.HasGuidedPath) continue;
+
+                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
+                if (string.IsNullOrEmpty(parameter)) continue;
+                if (!DepthParameterDetector.IsFxFloatFittedToGuidedPath(
+                        socket.component, parameter, SpsGuidedPath.FromSocket(socket.component)))
+                {
+                    result.Add(socket.DisplayName);
+                }
+            }
+            return result;
         }
 
         protected void RefreshSockets()
@@ -1548,6 +1620,17 @@ namespace AuroraKai.SPSTools
 
                     statusMessage = $"Generated successfully! {goName} added to avatar.";
                     statusType = MessageType.Info;
+
+                    var unfitted = GetUnfittedGuidedPathSockets();
+                    if (unfitted.Count > 0)
+                    {
+                        statusMessage += $"\n{string.Join(", ", unfitted)} " +
+                            (unfitted.Count == 1 ? "has" : "have") +
+                            " an SPS2 guided path, but the FX Float doesn't measure depth " +
+                            "along it, so the effect may not follow the plug tip. " +
+                            "Use \"Fit to Path\" in SPS Sockets.";
+                        statusType = MessageType.Warning;
+                    }
                 }
                 catch (Exception e)
                 {
