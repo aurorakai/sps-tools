@@ -671,6 +671,7 @@ namespace AuroraKai.SPSTools
                     config.overlayMatchDistance = EditorGUILayout.Slider(
                         new GUIContent("Overlay Match Distance",
                             "Max distance (m) for an overlay vert to inherit primary deltas. " +
+                            "Parts further out follow the attached parts they're connected to. " +
                             "Increase for non-meter-scale avatars."),
                         config.overlayMatchDistance, 0.001f, 0.2f);
 

@@ -20,6 +20,12 @@ namespace AuroraKai.SPSTools
     public static class BlendshapeGenerator
     {
         /// <summary>
+        /// An overlay vert counts as the same surface as the primary (and takes its
+        /// normals) when its normal is within ~45° of the primary's there.
+        /// </summary>
+        internal const float SharedSurfaceMinNormalDot = 0.7f;
+
+        /// <summary>
         /// Rough average edge length (meters) of the mesh triangles overlapping the
         /// path's affected region. Used by the UI to preview displacement-vs-topology
         /// ratio - when displacement >> avg edge, tri faceting is likely visible.
@@ -176,15 +182,22 @@ namespace AuroraKai.SPSTools
 
             var primaryWorldVerts = GetSkinnedWorldRefVerts(
                 renderers[0], primaryResult.modifiedMesh.vertices);
-            var searchablePrimaryIndices = CollectSearchableIndices(
-                primaryDeltasByName, primaryResult.modifiedMesh);
+            var movedPrimaryVerts = CollectMovedVertices(
+                primaryDeltasByName, primaryWorldVerts.Length);
+            var primarySampler = new PrimarySurfaceSampler(
+                primaryWorldVerts, primaryResult.modifiedMesh.triangles,
+                movedPrimaryVerts, overlayMatchDistance);
+            // Every primary vert, moved or not: tells overlay verts that sit on the
+            // primary's surface (which copy it) from ones that stick out of it.
+            var primarySurfaceTree = new KDTreeNearest(primaryWorldVerts);
 
             for (int i = 1; i < renderers.Count; i++)
             {
                 string suffix = "_" + SanitizeAssetName(renderers[i].gameObject.name) + $"_{i}";
                 var overlay = GenerateOverlayByTransfer(
                     renderers[i], renderers[0], avatarRoot, path,
-                    primaryDeltasByName, primaryWorldVerts, searchablePrimaryIndices,
+                    primaryDeltasByName, primaryWorldVerts, primarySampler,
+                    primarySurfaceTree,
                     outputFolder, "SPSBulge_GeneratedMesh" + meshAssetSuffix + suffix,
                     subdivide, subdivisionPasses, recalculateNormals,
                     overlayMatchDistance);
@@ -1232,19 +1245,17 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
-        /// Returns the set of indices to search for overlay-vertex matching:
-        /// every primary vertex that moves in any blendshape, plus their 1-ring
-        /// neighbors. Including the 1-ring matters for correctness - overlay
-        /// vertices that happen to sit exactly on a primary boundary vert
-        /// (delta = 0) need to find that vert in the search, otherwise NN picks
-        /// a moved neighbor and the overlay deforms when it shouldn't.
+        /// Returns the primary vertices whose triangles are searched for overlay
+        /// matching: every primary vertex that moves in any blendshape. Triangles
+        /// on the edge of the moved region blend down to their still corners, so an
+        /// overlay vert on the still surface just past it projects onto that edge
+        /// and stays put. Searching still triangles too would only widen the band
+        /// of overlay verts whose base normals get replaced with the primary's,
+        /// changing their shading with nothing moving there.
         /// </summary>
-        private static List<int> CollectSearchableIndices(
-            Dictionary<string, PrimaryDeltaSet> deltasByName, Mesh primaryMesh)
+        private static bool[] CollectMovedVertices(
+            Dictionary<string, PrimaryDeltaSet> deltasByName, int vertCount)
         {
-            int vertCount = 0;
-            foreach (var kv in deltasByName)
-            { vertCount = kv.Value.vertexDeltas.Length; break; }
             var moved = new bool[vertCount];
             foreach (var kv in deltasByName)
             {
@@ -1252,33 +1263,25 @@ namespace AuroraKai.SPSTools
                 for (int v = 0; v < deltas.Length; v++)
                     if (deltas[v].sqrMagnitude > 0.0000001f) moved[v] = true;
             }
-
-            // Expand to 1-ring of moved verts
-            var searchable = new bool[vertCount];
-            var adjacency = BuildAdjacency(primaryMesh);
-            for (int v = 0; v < vertCount; v++)
-            {
-                if (!moved[v]) continue;
-                searchable[v] = true;
-                foreach (int n in adjacency[v]) searchable[n] = true;
-            }
-
-            var indices = new List<int>();
-            for (int v = 0; v < vertCount; v++)
-                if (searchable[v]) indices.Add(v);
-            return indices;
+            return moved;
         }
 
         /// <summary>
         /// Generates blendshape frames on an overlay mesh by transferring the
-        /// primary's deltas via nearest-neighbor matching in world space.
+        /// primary's deltas from the nearest point on its surface in world space
+        /// (see <see cref="PrimarySurfaceSampler"/>).
         /// Recomputing normals on the overlay's own topology produces a shading
         /// seam at the affected-region boundary (amplified by Boundary Blend Rings),
-        /// so we inherit the primary's normals directly. At coincident verts we
+        /// so we inherit the primary's normals directly. At matched verts we
         /// rewrite BOTH the base normal and the delta to match the primary's -
         /// matching only the final (w=1) normal still left the overlay shading
         /// differently at every intermediate weight, visible as a ghost during
         /// preview.
+        ///
+        /// Overlay verts further than the match distance from the primary (parts
+        /// that stick out of the surface, like a valve or a handle) have no primary
+        /// surface to copy, so they take a smooth blend of the deltas of the attached
+        /// verts of their own island. See <see cref="FillDetachedDeltas"/>.
         /// </summary>
         private static BlendshapeResult GenerateOverlayByTransfer(
             SkinnedMeshRenderer overlayRenderer,
@@ -1287,7 +1290,8 @@ namespace AuroraKai.SPSTools
             List<PathWaypoint> path,
             Dictionary<string, PrimaryDeltaSet> primaryDeltasByName,
             Vector3[] primaryWorldVerts,
-            List<int> searchablePrimaryIndices,
+            PrimarySurfaceSampler primarySampler,
+            KDTreeNearest primarySurfaceTree,
             string outputFolder,
             string meshAssetName,
             bool subdivide,
@@ -1324,41 +1328,64 @@ namespace AuroraKai.SPSTools
 
                 var overlayWorldVerts = GetSkinnedWorldRefVerts(overlayRenderer, vertices);
 
-                // Nearest-primary-vert map. 2cm threshold lets tight overlays match
-                // while keeping distant accessory parts (that shouldn't deform) out.
-                // Search includes 1-ring of moved verts so an overlay vert exactly
-                // on a primary boundary vert (delta=0) finds that vert and stays put,
-                // instead of inheriting a neighbor's non-zero delta.
-                // KDTree over the searchable subset turns the per-overlay-vert
-                // lookup from O(|searchable|) linear to O(log |searchable|).
+                // Nearest point on the primary's surface. The match distance (2 cm by
+                // default) lets tight overlays match while keeping distant accessory
+                // parts out. An overlay vert on a primary vert gets exactly that
+                // vert's values.
                 float matchThresholdSq = overlayMatchDistance * overlayMatchDistance;
-                var searchablePoints = new Vector3[searchablePrimaryIndices.Count];
-                for (int i = 0; i < searchablePrimaryIndices.Count; i++)
-                    searchablePoints[i] = primaryWorldVerts[searchablePrimaryIndices[i]];
-                var searchTree = new KDTreeNearest(searchablePoints);
+                var samples = new PrimarySurfaceSampler.Sample[vertices.Length];
+                var matched = new bool[vertices.Length];
+                for (int v = 0; v < vertices.Length; v++)
+                    matched[v] = primarySampler.TrySample(overlayWorldVerts[v], out samples[v]);
 
-                var nnMap = new int[vertices.Length];
+                // Verts within the match distance of ANY primary vert are attached to
+                // the surface: they copy their match, or stay put where the primary
+                // doesn't move. The rest stick out of it. A hard cut-off there tore
+                // protruding parts in half (the part under the line moved, the part
+                // above it didn't), so detached verts are filled from their island.
+                var attached = new bool[vertices.Length];
                 for (int v = 0; v < vertices.Length; v++)
                 {
-                    int localIdx = searchTree.FindNearest(overlayWorldVerts[v]);
-                    if (localIdx < 0) { nnMap[v] = -1; continue; }
-                    int primaryIdx = searchablePrimaryIndices[localIdx];
-                    float sd = (primaryWorldVerts[primaryIdx] - overlayWorldVerts[v]).sqrMagnitude;
-                    nnMap[v] = sd < matchThresholdSq ? primaryIdx : -1;
+                    if (matched[v]) { attached[v] = true; continue; }
+                    int nearest = primarySurfaceTree.FindNearest(overlayWorldVerts[v]);
+                    attached[v] = nearest >= 0 &&
+                        (primaryWorldVerts[nearest] - overlayWorldVerts[v]).sqrMagnitude < matchThresholdSq;
                 }
+                var overlayAdjacency = BuildAdjacency(mesh);
+                var detachedFillOrder = BuildDetachedFillOrder(overlayAdjacency, attached);
 
                 var primaryTransform = primaryRenderer.transform;
                 var overlayTransform = overlayRenderer.transform;
                 var names = new List<string>();
 
-                // Copy primary base normals onto the overlay at matched verts.
+                // Primary's base normal at each matched vert (world space), and whether
+                // the overlay there is the same surface: facing within ~45° of it, like
+                // clothing or a copy of the body. The sides and underside of a part
+                // standing on the primary (a valve, a handle) face elsewhere and keep
+                // their own normals - giving them the primary's turned some by >90°.
+                bool hasPrimaryBaseNormals = primaryBaseNormals != null
+                    && primaryBaseNormals.Length == primaryWorldVerts.Length;
+                var primaryBaseWorld = new Vector3[vertices.Length];
+                var sharesSurface = new bool[vertices.Length];
+                if (hasPrimaryBaseNormals)
+                {
+                    for (int v = 0; v < vertices.Length; v++)
+                    {
+                        if (!matched[v]) continue;
+                        Vector3 primaryBase = samples[v].Blend(primaryBaseNormals);
+                        if (primaryBase.sqrMagnitude < 1e-12f) continue;
+                        primaryBaseWorld[v] = primaryTransform.TransformDirection(primaryBase.normalized);
+                        Vector3 ownWorld = overlayTransform.TransformDirection(overlayBaseNormals[v]);
+                        sharesSurface[v] = Vector3.Dot(ownWorld.normalized, primaryBaseWorld[v]) >= SharedSurfaceMinNormalDot;
+                    }
+                }
+
+                // Copy primary base normals onto the overlay where it shares the surface.
                 // Unity blends normals linearly (base + w·delta), so matching only
                 // the delta leaves a (1-w)·(overlayBase - primaryBase) residual that
                 // shows as a visible seam at every intermediate weight during preview.
                 // Matching the base too makes the blend identical at every weight.
-                bool overrideBaseNormals = recalculateNormals && primaryBaseNormals != null
-                    && primaryBaseNormals.Length == primaryWorldVerts.Length;
-                if (overrideBaseNormals)
+                if (recalculateNormals && hasPrimaryBaseNormals)
                 {
                     bool anyPrimaryHasNormals = false;
                     foreach (var kv in primaryDeltasByName)
@@ -1370,10 +1397,8 @@ namespace AuroraKai.SPSTools
                         bool anyOverridden = false;
                         for (int v = 0; v < vertices.Length; v++)
                         {
-                            int nn = nnMap[v];
-                            if (nn < 0) continue;
-                            Vector3 worldBase = primaryTransform.TransformDirection(primaryBaseNormals[nn]);
-                            overlayBaseNormals[v] = overlayTransform.InverseTransformDirection(worldBase);
+                            if (!sharesSurface[v]) continue;
+                            overlayBaseNormals[v] = overlayTransform.InverseTransformDirection(primaryBaseWorld[v]);
                             anyOverridden = true;
                         }
                         if (anyOverridden) mesh.normals = overlayBaseNormals;
@@ -1395,21 +1420,34 @@ namespace AuroraKai.SPSTools
 
                     for (int v = 0; v < vertices.Length; v++)
                     {
-                        int nn = nnMap[v];
-                        if (nn < 0) continue;
+                        if (!matched[v]) continue;
 
                         // Vertex delta: primary mesh-local → world → overlay mesh-local
-                        Vector3 worldDelta = primaryTransform.TransformVector(primaryVerts[nn]);
+                        Vector3 worldDelta = primaryTransform.TransformVector(samples[v].Blend(primaryVerts));
                         overlayVerts[v] = overlayTransform.InverseTransformVector(worldDelta);
 
-                        // Normal delta: primary's delta rotated into overlay space.
-                        // Base was already unified above, so this is all that's needed.
-                        if (writeNormals)
+                        if (!writeNormals) continue;
+                        Vector3 worldNormalDelta = primaryTransform.TransformDirection(samples[v].Blend(primaryNormals));
+                        if (sharesSurface[v])
                         {
-                            Vector3 worldNormalDelta = primaryTransform.TransformDirection(primaryNormals[nn]);
+                            // Normal delta: primary's delta rotated into overlay space.
+                            // Base was already unified above, so this is all that's needed.
                             overlayNormals[v] = overlayTransform.InverseTransformDirection(worldNormalDelta);
                         }
+                        else if (primaryBaseWorld[v] != Vector3.zero)
+                        {
+                            // Own normal, turned the way the primary's surface turns.
+                            Vector3 turnedPrimary = primaryBaseWorld[v] + worldNormalDelta;
+                            if (turnedPrimary.sqrMagnitude < 1e-12f) continue;
+                            var turn = Quaternion.FromToRotation(primaryBaseWorld[v], turnedPrimary.normalized);
+                            Vector3 own = overlayTransform.TransformDirection(overlayBaseNormals[v]).normalized;
+                            overlayNormals[v] = overlayTransform.InverseTransformDirection(turn * own - own);
+                        }
                     }
+
+                    FillDetachedDeltas(overlayVerts, overlayAdjacency, attached, detachedFillOrder);
+                    if (overlayNormals != null)
+                        FillDetachedDeltas(overlayNormals, overlayAdjacency, attached, detachedFillOrder);
 
                     mesh.AddBlendShapeFrame(name, 100f, overlayVerts, overlayNormals, null);
                     names.Add(name);
@@ -1431,6 +1469,84 @@ namespace AuroraKai.SPSTools
             finally
             {
                 EditorUtility.ClearProgressBar();
+            }
+        }
+
+        /// <summary>
+        /// Detached verts (see <see cref="GenerateOverlayByTransfer"/>) that are
+        /// connected to an attached vert, ordered by ring distance from the attached
+        /// ones. Verts on islands with no attached vert are left out and stay put.
+        /// </summary>
+        internal static List<int> BuildDetachedFillOrder(List<int>[] adjacency, bool[] attached)
+        {
+            var order = new List<int>();
+            var queued = (bool[])attached.Clone();
+            var queue = new Queue<int>();
+            for (int v = 0; v < attached.Length; v++)
+                if (attached[v]) queue.Enqueue(v);
+
+            while (queue.Count > 0)
+            {
+                int v = queue.Dequeue();
+                foreach (int n in adjacency[v])
+                {
+                    if (queued[n]) continue;
+                    queued[n] = true;
+                    order.Add(n);
+                    queue.Enqueue(n);
+                }
+            }
+            return order;
+        }
+
+        /// <summary>
+        /// Fills the deltas of detached verts with a smooth (harmonic) blend of the
+        /// attached verts' deltas: a part that sticks out of a moving surface moves
+        /// with it, and one bridging moving and still areas stretches evenly between
+        /// them. Attached deltas are left untouched.
+        /// </summary>
+        internal static void FillDetachedDeltas(
+            Vector3[] deltas, List<int>[] adjacency, bool[] attached, List<int> fillOrder)
+        {
+            if (fillOrder.Count == 0) return;
+
+            // First guess in ring order: each vert averages its already-filled
+            // neighbours, so a part attached on one side is exact after this pass.
+            var filled = (bool[])attached.Clone();
+            foreach (int v in fillOrder)
+            {
+                Vector3 sum = Vector3.zero;
+                int count = 0;
+                foreach (int n in adjacency[v])
+                {
+                    if (!filled[n]) continue;
+                    sum += deltas[n];
+                    count++;
+                }
+                deltas[v] = count > 0 ? sum / count : Vector3.zero;
+                filled[v] = true;
+            }
+
+            // Gauss-Seidel relaxation towards the harmonic fill. Every neighbour of
+            // a vert in the fill order is attached or in the order itself.
+            const int maxIterations = 200;
+            const float tolerance = 1e-7f;
+            for (int iteration = 0; iteration < maxIterations; iteration++)
+            {
+                float maxChange = 0f;
+                foreach (int v in fillOrder)
+                {
+                    var neighbours = adjacency[v];
+                    if (neighbours.Count == 0) continue;
+                    Vector3 sum = Vector3.zero;
+                    foreach (int n in neighbours)
+                        sum += deltas[n];
+                    Vector3 next = sum / neighbours.Count;
+                    float change = (next - deltas[v]).sqrMagnitude;
+                    if (change > maxChange) maxChange = change;
+                    deltas[v] = next;
+                }
+                if (maxChange < tolerance * tolerance) break;
             }
         }
 

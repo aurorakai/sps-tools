@@ -493,6 +493,220 @@ namespace AuroraKai.SPSTools.Tests
         }
 
         [Test]
+        public void OverlayTransfer_DenseOverlayBlendsAcrossPrimaryTriangles()
+        {
+            // Regression: overlay verts copied their single nearest primary vert, so
+            // a dense overlay on a coarse primary moved in steps (neighbouring verts
+            // snapping to primary verts with different deltas). Each overlay vert
+            // must get the primary's deltas blended at the nearest surface point.
+            var avatar = new GameObject("Avatar");
+
+            var primaryMesh = new Mesh();
+            primaryMesh.vertices = new Vector3[]
+            {
+                new Vector3(-1f, -1f, 0f), new Vector3(1f, -1f, 0f),
+                new Vector3(1f, 1f, 0f), new Vector3(-1f, 1f, 0f),
+                new Vector3(0f, 0f, 0f),
+            };
+            primaryMesh.normals = new Vector3[]
+            {
+                Vector3.back, Vector3.back, Vector3.back, Vector3.back, Vector3.back,
+            };
+            primaryMesh.triangles = new int[]
+            {
+                0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4,
+            };
+            primaryMesh.RecalculateBounds();
+
+            // A thin strip lying on the primary between its centre and right edge,
+            // inside the primary triangle (1, 2, 4).
+            var xs = new[] { 0.25f, 0.5f, 0.75f, 0.95f };
+            var overlayVerts = new List<Vector3>();
+            var overlayTris = new List<int>();
+            for (int i = 0; i < xs.Length; i++)
+            {
+                overlayVerts.Add(new Vector3(xs[i], -0.01f, 0f));
+                overlayVerts.Add(new Vector3(xs[i], 0.01f, 0f));
+                if (i == 0) continue;
+                int a = (i - 1) * 2, b = i * 2;
+                overlayTris.AddRange(new[] { a, a + 1, b, a + 1, b + 1, b });
+            }
+            var overlayMesh = new Mesh();
+            overlayMesh.SetVertices(overlayVerts);
+            overlayMesh.SetTriangles(overlayTris, 0);
+            overlayMesh.RecalculateNormals();
+            overlayMesh.RecalculateBounds();
+
+            var primaryGo = new GameObject("Primary");
+            primaryGo.transform.SetParent(avatar.transform, false);
+            var primaryRenderer = primaryGo.AddComponent<SkinnedMeshRenderer>();
+            primaryRenderer.sharedMesh = primaryMesh;
+
+            var overlayGo = new GameObject("Overlay");
+            overlayGo.transform.SetParent(avatar.transform, false);
+            var overlayRenderer = overlayGo.AddComponent<SkinnedMeshRenderer>();
+            overlayRenderer.sharedMesh = overlayMesh;
+
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = Vector3.zero, localNormal = Vector3.back, radius = 1.2f },
+                new PathWaypoint { localPosition = new Vector3(0f, 2f, 0f), localNormal = Vector3.back, radius = 1.2f },
+            };
+
+            string folder = "Assets/SPSTools/Test/Bulge/OverlayDenseBlend";
+            try
+            {
+                var results = BlendshapeGenerator.GenerateBulgeBlendshapes(
+                    new List<SkinnedMeshRenderer> { primaryRenderer, overlayRenderer },
+                    avatar.transform, path,
+                    positionCount: 1, displacement: 0.05f,
+                    outputFolder: folder,
+                    smoothingPasses: 0,
+                    recalculateNormals: true,
+                    overlayMatchDistance: 0.02f);
+
+                var primaryOut = results[0].modifiedMesh;
+                var overlayOut = results[1].modifiedMesh;
+                var pd = new Vector3[primaryOut.vertexCount];
+                primaryOut.GetBlendShapeFrameVertices(
+                    primaryOut.GetBlendShapeIndex(results[0].blendshapeNames[0]), 0, pd, null, null);
+                var od = new Vector3[overlayOut.vertexCount];
+                overlayOut.GetBlendShapeFrameVertices(
+                    overlayOut.GetBlendShapeIndex(results[1].blendshapeNames[0]), 0, od, null, null);
+
+                Assert.Greater((pd[4] - pd[1]).magnitude, 0.001f,
+                    "Centre and edge of the primary must move differently for the test to mean anything.");
+
+                var outVerts = overlayOut.vertices;
+                for (int v = 0; v < outVerts.Length; v++)
+                {
+                    // Barycentric weights of (x, y) in triangle (1, 2, 4).
+                    float x = outVerts[v].x, y = outVerts[v].y;
+                    Vector3 expected = pd[1] * ((x - y) / 2f) + pd[2] * ((x + y) / 2f) + pd[4] * (1f - x);
+                    Assert.Less((od[v] - expected).magnitude, 1e-4f,
+                        $"Overlay vert {v} at x={x} must get the primary's deltas blended at that point.");
+                }
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(folder);
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(primaryMesh);
+                Object.DestroyImmediate(overlayMesh);
+            }
+        }
+
+        [Test]
+        public void OverlayTransfer_ProtrudingPartFollowsItsAttachedBase()
+        {
+            // Regression: an overlay part sticking out of the primary further than the
+            // match distance (a valve or handle on the belly) only moved below that
+            // distance and stayed put above it, tearing the part in half.
+            var avatar = new GameObject("Avatar");
+
+            var primaryMesh = new Mesh();
+            primaryMesh.vertices = new Vector3[]
+            {
+                new Vector3(-1f, -1f, 0f), new Vector3(1f, -1f, 0f),
+                new Vector3(1f, 1f, 0f), new Vector3(-1f, 1f, 0f),
+                new Vector3(0f, 0f, 0f),
+            };
+            primaryMesh.normals = new Vector3[]
+            {
+                Vector3.back, Vector3.back, Vector3.back, Vector3.back, Vector3.back,
+            };
+            primaryMesh.triangles = new int[]
+            {
+                0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4,
+            };
+            primaryMesh.RecalculateBounds();
+
+            // A 5 cm post standing on the primary's centre vert (base within the
+            // 2 cm match distance, the rest beyond it), plus a separate triangle
+            // floating 50 cm away that isn't attached to anything.
+            var overlayMesh = new Mesh();
+            overlayMesh.vertices = new Vector3[]
+            {
+                new Vector3(-0.01f, 0f, 0f), new Vector3(0.01f, 0f, 0f),
+                new Vector3(-0.01f, 0f, -0.025f), new Vector3(0.01f, 0f, -0.025f),
+                new Vector3(-0.01f, 0f, -0.05f), new Vector3(0.01f, 0f, -0.05f),
+                new Vector3(-0.01f, 0f, -0.5f), new Vector3(0.01f, 0f, -0.5f),
+                new Vector3(0f, 0.01f, -0.5f),
+            };
+            overlayMesh.triangles = new int[]
+            {
+                0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5,
+                6, 8, 7,
+            };
+            overlayMesh.RecalculateNormals();
+            overlayMesh.RecalculateBounds();
+            var ownNormals = overlayMesh.normals;
+
+            var primaryGo = new GameObject("Primary");
+            primaryGo.transform.SetParent(avatar.transform, false);
+            var primaryRenderer = primaryGo.AddComponent<SkinnedMeshRenderer>();
+            primaryRenderer.sharedMesh = primaryMesh;
+
+            var overlayGo = new GameObject("Overlay");
+            overlayGo.transform.SetParent(avatar.transform, false);
+            var overlayRenderer = overlayGo.AddComponent<SkinnedMeshRenderer>();
+            overlayRenderer.sharedMesh = overlayMesh;
+
+            var path = new List<PathWaypoint>
+            {
+                new PathWaypoint { localPosition = Vector3.zero, localNormal = Vector3.back, radius = 2f },
+                new PathWaypoint { localPosition = new Vector3(0f, 2f, 0f), localNormal = Vector3.back, radius = 2f },
+            };
+
+            string folder = "Assets/SPSTools/Test/Bulge/OverlayProtrusion";
+            try
+            {
+                var results = BlendshapeGenerator.GenerateBulgeBlendshapes(
+                    new List<SkinnedMeshRenderer> { primaryRenderer, overlayRenderer },
+                    avatar.transform, path,
+                    positionCount: 1, displacement: 0.05f,
+                    outputFolder: folder,
+                    smoothingPasses: 0,
+                    recalculateNormals: true,
+                    overlayMatchDistance: 0.02f);
+
+                Assert.AreEqual(2, results.Count, "Both primary and overlay results expected.");
+                var overlayOut = results[1].modifiedMesh;
+                int bs = overlayOut.GetBlendShapeIndex(results[1].blendshapeNames[0]);
+                var dv = new Vector3[overlayOut.vertexCount];
+                overlayOut.GetBlendShapeFrameVertices(bs, 0, dv, null, null);
+
+                Assert.Greater(dv[0].magnitude, 0.001f,
+                    "The post's base sits on the primary's moving centre and must move.");
+                // The two base verts sit 2 cm apart on a sloped bulge, so they differ
+                // slightly; the rest of the post must move with them (within 1 mm of
+                // a 5 cm move), not stay put.
+                Vector3 baseDelta = (dv[0] + dv[1]) * 0.5f;
+                for (int v = 2; v <= 5; v++)
+                    Assert.Less((dv[v] - baseDelta).magnitude, 0.001f,
+                        $"Post vert {v} must follow its base.");
+                for (int v = 6; v <= 8; v++)
+                    Assert.Less(dv[v].magnitude, 1e-6f,
+                        $"Floating vert {v} isn't attached to the primary and must not move.");
+
+                // The post stands at right angles to the primary, so it isn't the
+                // primary's surface: its base keeps its own normals rather than
+                // taking the primary's (which turned them by 90°).
+                var outNormals = overlayOut.normals;
+                for (int v = 0; v <= 1; v++)
+                    Assert.Greater(Vector3.Dot(outNormals[v], ownNormals[v]), 0.999f,
+                        $"Post base vert {v} must keep its own normal.");
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(folder);
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(primaryMesh);
+                Object.DestroyImmediate(overlayMesh);
+            }
+        }
+
+        [Test]
         public void Preview_RestoresNonZeroPreSetWeightAfterRebind()
         {
             var root = new GameObject("Avatar");
