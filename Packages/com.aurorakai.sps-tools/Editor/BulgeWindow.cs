@@ -22,6 +22,12 @@ namespace AuroraKai.SPSTools
         [SerializeField] private bool _showNormalAdvanced;
         [SerializeField] private bool _showBlendshapeAdvanced;
 
+        // Building the bulge path from a socket's SPS2 guided path
+        private const int GuidedPathWaypointCount = 8;
+        [SerializeField] private int _guidedPathSocketChoice;
+        [SerializeField] private GuidedPathProjection _guidedPathProjection =
+            GuidedPathProjection.Front;
+
         // Normal-delta visualization (Advanced → Show Normals).
         // Off by default; drawn via the scene-view overlay subscribed in
         // OnEnableExtra. The baked mesh, the authored-delta mask, and the
@@ -545,6 +551,8 @@ namespace AuroraKai.SPSTools
                     }
                 }
 
+                DrawGuidedPathSource(hasPath);
+
                 float dispMM = Mathf.Round(config.blendshapeDisplacement * 1000f);
                 dispMM = EditorGUILayout.IntSlider(TooltipContent.Displacement, (int)dispMM, 1, 100);
                 config.blendshapeDisplacement = dispMM * 0.001f;
@@ -891,6 +899,130 @@ namespace AuroraKai.SPSTools
                 statusType = MessageType.Error;
                 Debug.LogException(e);
             }
+        }
+
+        /// <summary>
+        /// Builds the bulge path from a socket's SPS2 guided path, so the bulge
+        /// follows the route SPS2 plugs bend along. Only shown when a detected
+        /// socket has a guided path.
+        /// </summary>
+        private void DrawGuidedPathSource(bool hasPath)
+        {
+            // Sockets the effect already uses come first, so they're the default.
+            var sockets = new List<DetectedSocket>();
+            if (config.enabledSocketIndices == null)
+                config.enabledSocketIndices = new List<int>();
+            foreach (int idx in config.enabledSocketIndices)
+            {
+                if (idx >= 0 && idx < detectedSockets.Count && detectedSockets[idx].HasGuidedPath)
+                    sockets.Add(detectedSockets[idx]);
+            }
+            foreach (var socket in detectedSockets)
+            {
+                if (socket.HasGuidedPath && !sockets.Contains(socket))
+                    sockets.Add(socket);
+            }
+            if (sockets.Count == 0) return;
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("From SPS2 Guided Path", EditorStyles.miniBoldLabel);
+
+            var names = new string[sockets.Count];
+            for (int i = 0; i < sockets.Count; i++)
+                names[i] = $"{sockets[i].DisplayName} ({sockets[i].gameObjectName})";
+            _guidedPathSocketChoice = Mathf.Clamp(_guidedPathSocketChoice, 0, sockets.Count - 1);
+            _guidedPathSocketChoice = EditorGUILayout.Popup(
+                TooltipContent.GuidedPathSocket, _guidedPathSocketChoice, names);
+            _guidedPathProjection = (GuidedPathProjection)EditorGUILayout.EnumPopup(
+                TooltipContent.GuidedPathProjection, _guidedPathProjection);
+
+            if (GUILayout.Button(hasPath ? "Rebuild Path from Socket" : "Build Path from Socket",
+                    GUILayout.Height(22)))
+            {
+                BuildPathFromGuidedPath(sockets[_guidedPathSocketChoice], hasPath);
+            }
+            EditorGUILayout.EndVertical();
+        }
+
+        private void BuildPathFromGuidedPath(DetectedSocket socket, bool hasPath)
+        {
+            if (targetRenderer == null || config.avatarRoot == null)
+            {
+                EditorUtility.DisplayDialog("SPS Bulge",
+                    "Please select a Target Mesh above before building a path.", "OK");
+                return;
+            }
+            if (hasPath && !EditorUtility.DisplayDialog("SPS Bulge",
+                    "Replace the current path with one built from the socket's guided path?",
+                    "Replace", "Cancel"))
+            {
+                return;
+            }
+
+            var guidedPath = SpsGuidedPath.FromSocket(socket.component);
+            var result = GuidedPathSurfaceProjector.Project(
+                guidedPath,
+                targetRenderer,
+                config.avatarRoot.transform,
+                _guidedPathProjection,
+                GuidedPathWaypointCount,
+                hasPath ? config.pathWaypoints[0].radius : 0.03f,
+                hasPath ? config.pathWaypoints[0].aspectRatio : 1f);
+            if (result == null)
+            {
+                EditorUtility.DisplayDialog("SPS Bulge",
+                    $"The guided path of '{socket.DisplayName}' doesn't pass through " +
+                    $"'{targetRenderer.name}' when projected to the " +
+                    $"{_guidedPathProjection.ToString().ToLowerInvariant()}. " +
+                    "Try another surface direction, or Nearest.", "OK");
+                return;
+            }
+
+            config.pathWaypoints = result.waypoints;
+            // A fitted FX Float reports the fraction of the guided path travelled,
+            // so the travel range is the part of the path that lies on this mesh.
+            config.depthRangeStart = result.startFraction;
+            config.depthRangeEnd = result.endFraction;
+
+            var notes = new List<string>();
+            int socketIdx = detectedSockets.IndexOf(socket);
+            if (socketIdx >= 0 && !config.enabledSocketIndices.Contains(socketIdx))
+            {
+                config.enabledSocketIndices.Add(socketIdx);
+                notes.Add($"Added '{socket.DisplayName}' to SPS Sockets.");
+            }
+
+            string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
+            if (!string.IsNullOrEmpty(parameter) &&
+                !DepthParameterDetector.IsFxFloatFittedToGuidedPath(
+                    socket.component, parameter, guidedPath) &&
+                EditorUtility.DisplayDialog("SPS Bulge",
+                    $"Fit FX Float '{parameter}' on '{socket.DisplayName}' to the guided path " +
+                    $"({guidedPath.Length:0.00} m)?\n\nIts depth animation will use Local units " +
+                    "over the path's length, so the bulge follows the plug tip along the path.",
+                    "Fit", "Not Now") &&
+                DepthParameterDetector.FitFxFloatToGuidedPath(socket.component, parameter, guidedPath))
+            {
+                notes.Add($"Fitted '{parameter}' to the guided path.");
+                RefreshSockets();
+            }
+
+            if (result.startFraction > 0f || result.endFraction < 1f)
+            {
+                notes.Add($"Depth range set to {result.startFraction:0.00}-{result.endFraction:0.00}, " +
+                    "the part of the guided path that projects onto the mesh.");
+            }
+            if (result.nearestFallbacks > 0)
+            {
+                notes.Add($"{result.nearestFallbacks} waypoint(s) fell back to the nearest vertex; " +
+                    "check them with Redraw Path.");
+            }
+
+            statusMessage = $"Built the bulge path from the guided path of '{socket.DisplayName}'." +
+                (notes.Count > 0 ? "\n" + string.Join("\n", notes) : "");
+            statusType = result.nearestFallbacks > 0 ? MessageType.Warning : MessageType.Info;
+            SceneView.RepaintAll();
+            Repaint();
         }
 
         private void DrawManualBlendshapes()
