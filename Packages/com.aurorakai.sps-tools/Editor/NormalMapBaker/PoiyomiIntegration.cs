@@ -136,7 +136,7 @@ namespace AuroraKai.SPSTools
         {
             warning = null;
 
-            var thryType = FindType("Thry.ShaderOptimizer");
+            var thryType = s_thryType ??= FindType("Thry.ShaderOptimizer");
             if (thryType == null)
             {
                 warning = "Thry not detected. Locked Poiyomi materials can't be " +
@@ -199,6 +199,10 @@ namespace AuroraKai.SPSTools
             return best;
         }
 
+        // Thry's ShaderOptimizer once found. Only a hit is kept, so installing
+        // Thry takes effect without a domain reload.
+        private static Type s_thryType;
+
         /// <summary>
         /// Resolves a type by full name, then by simple name across all loaded
         /// assemblies. Tolerates ReflectionTypeLoadException from dynamic or
@@ -230,21 +234,8 @@ namespace AuroraKai.SPSTools
                 }
             }
 
-            string simpleName = fullName.Contains(".")
-                ? fullName.Substring(fullName.LastIndexOf('.') + 1)
-                : fullName;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type[] types;
-                try { types = asm.GetTypes(); }
-                catch (ReflectionTypeLoadException e) { types = e.Types; }
-
-                foreach (var type in types)
-                {
-                    if (type != null && type.Name == simpleName) return type;
-                }
-            }
-            return null;
+            string simpleName = fullName.Substring(fullName.LastIndexOf('.') + 1);
+            return ReflectionUtil.FindType(type => type.Name == simpleName);
         }
 
         /// <summary>One (renderer, material slot) pair animated by the baker's clip.</summary>
@@ -374,7 +365,7 @@ namespace AuroraKai.SPSTools
 
             var binding = EditorCurveBinding.FloatCurve(
                 rendererPath, typeof(SkinnedMeshRenderer),
-                $"blendShape.{blendshapeName}");
+                SpsAnimationUtility.BlendshapePropertyPrefix + blendshapeName);
             return AnimationUtility.GetEditorCurve(clip, binding);
         }
     }

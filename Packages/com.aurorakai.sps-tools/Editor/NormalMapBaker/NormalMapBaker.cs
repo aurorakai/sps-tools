@@ -46,37 +46,33 @@ namespace AuroraKai.SPSTools
 
             var primary = inputs.primary;
             var sourceMesh = primary.sharedMesh;
-            var workMesh = Object.Instantiate(sourceMesh);
-            workMesh.hideFlags = HideFlags.HideAndDontSave;
+            Mesh workMesh = null;
             try
             {
                 var avatarRoot = inputs.avatarRoot != null ? inputs.avatarRoot : primary.transform;
 
-                if (settings.referenceSubdivision > 0)
-                {
-                    var preSubdivisionMesh = workMesh;
-                    workMesh = MeshSubdivider.SubdivideInRegion(
-                        preSubdivisionMesh, inputs.path, primary.transform, avatarRoot,
-                        passes: settings.referenceSubdivision);
-                    if (preSubdivisionMesh != null && preSubdivisionMesh != workMesh)
-                        Object.DestroyImmediate(preSubdivisionMesh);
-                    workMesh.hideFlags = HideFlags.HideAndDontSave;
-                }
+                // SubdivideInRegion works on its own copy. Nothing here reads
+                // blendshapes, so they aren't carried through the passes.
+                workMesh = settings.referenceSubdivision > 0
+                    ? MeshSubdivider.SubdivideInRegion(
+                        sourceMesh, inputs.path, primary.transform, avatarRoot,
+                        passes: settings.referenceSubdivision, copyBlendShapes: false)
+                    : Object.Instantiate(sourceMesh);
+                workMesh.hideFlags = HideFlags.HideAndDontSave;
 
                 EditorUtility.DisplayProgressBar("SPS Normal Map Baker", "Smoothing + applying bulge...", 0.25f);
 
                 // Cache mesh arrays — each accessor on a Mesh copies the array.
                 var hrVerts = workMesh.vertices;
                 var hrTris = workMesh.triangles;
-                var hrAdjacency = BlendshapeGenerator.BuildAdjacency(workMesh);
+                var hrAdjacency = BlendshapeGenerator.BuildAdjacency(hrVerts, hrTris);
 
                 // Shared per-vert tube-distance computation. 3x radius threshold
                 // covers the bulge + falloff tail so the normal map fades smoothly.
-                float hrMaxRadius; float hrThreshold;
                 var hrDistances = ComputePerVertTubeDistances(
                     hrVerts, inputs.path, primary.transform, avatarRoot,
                     thresholdMultiplier: 3f,
-                    out hrMaxRadius, out hrThreshold);
+                    out float hrThreshold);
 
                 var nearTubeVertMask = new bool[hrVerts.Length];
                 for (int v = 0; v < hrVerts.Length; v++)
@@ -262,8 +258,7 @@ namespace AuroraKai.SPSTools
             var avatarRoot = sharedInputs.avatarRoot != null ? sharedInputs.avatarRoot : primary.transform;
             var primaryMesh = primary.sharedMesh;
             var overlayMesh = overlay.sharedMesh;
-            var tube = CatmullRomSpline.BuildTube(
-                sharedInputs.path, Mathf.Max(sharedInputs.path.Count * 8, 20));
+            var tube = CatmullRomSpline.BuildTube(sharedInputs.path);
 
             var overlayVerts = overlayMesh.vertices;
             var overlayWorldVerts = BlendshapeGenerator.GetSkinnedWorldRefVerts(
@@ -345,15 +340,14 @@ namespace AuroraKai.SPSTools
             Vector3[] meshLocalVerts, List<PathWaypoint> path,
             Transform meshTransform, Transform avatarRoot,
             float thresholdMultiplier,
-            out float maxRadius, out float threshold)
+            out float threshold)
         {
-            maxRadius = 0f;
             threshold = 0f;
             if (path == null || path.Count < 2) return new float[meshLocalVerts.Length];
 
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
+            var tube = CatmullRomSpline.BuildTube(path);
 
+            float maxRadius = 0f;
             foreach (var wp in path)
                 if (wp.radius > maxRadius) maxRadius = wp.radius;
             threshold = Mathf.Max(maxRadius * thresholdMultiplier, 0.01f * thresholdMultiplier);
@@ -433,7 +427,7 @@ namespace AuroraKai.SPSTools
             var distances = ComputePerVertTubeDistances(
                 meshLocalVerts, path, meshTransform, avatarRoot,
                 thresholdMultiplier: 3f,
-                out _, out float threshold);
+                out float threshold);
 
             var keep = new List<int>(tris.Length);
             for (int i = 0; i < tris.Length; i += 3)
@@ -605,10 +599,7 @@ namespace AuroraKai.SPSTools
                         else avg = new Vector3(0f, 0f, 1f);
 
                         scratch[idx] = new Color32(
-                            (byte)Mathf.RoundToInt((avg.x * 0.5f + 0.5f) * 255f),
-                            (byte)Mathf.RoundToInt((avg.y * 0.5f + 0.5f) * 255f),
-                            (byte)Mathf.RoundToInt((avg.z * 0.5f + 0.5f) * 255f),
-                            255);
+                            EncodeAxis(avg.x), EncodeAxis(avg.y), EncodeAxis(avg.z), 255);
                     }
                 }
 

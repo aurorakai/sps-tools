@@ -51,6 +51,14 @@ namespace AuroraKai.SPSTools
         public Mesh generatedMesh;
         public string generatedMeshPath = "";
         public string generatedMeshGuid = "";
+
+        /// <summary>Whether an original mesh has been recorded (it may not load).</summary>
+        public bool HasOriginalRecord =>
+            originalMesh != null || !string.IsNullOrEmpty(originalMeshPath);
+
+        /// <summary>Whether a generated mesh has been recorded (it may not load).</summary>
+        public bool HasGeneratedRecord =>
+            generatedMesh != null || !string.IsNullOrEmpty(generatedMeshPath);
     }
 
     [Serializable]
@@ -126,6 +134,10 @@ namespace AuroraKai.SPSTools
         public string generatedMeshPath = "";
         public string generatedMeshGuid = "";
 
+        /// <summary>Whether an original primary mesh has been recorded (it may not load).</summary>
+        public bool HasOriginalRecord =>
+            originalMesh != null || !string.IsNullOrEmpty(originalMeshPath);
+
         // Additional meshes that receive matching blendshapes (e.g. clothing overlays)
         public List<TrackedMesh> additionalMeshes = new List<TrackedMesh>();
 
@@ -164,14 +176,20 @@ namespace AuroraKai.SPSTools
         public string GetConfigFolder()
         {
             if (avatarRoot == null) return null;
-            string avatarName = SanitizeFileName(avatarRoot.name);
             string effect = SanitizeFileName(EffectTypeName);
             string configName = SanitizeFileName(
                 string.IsNullOrWhiteSpace(configurationName)
                     ? "Default"
                     : configurationName);
-            return $"Assets/SPSTools/{avatarName}/{effect}/{configName}";
+            return $"{GetAvatarFolder(avatarRoot)}/{effect}/{configName}";
         }
+
+        /// <summary>
+        /// The folder that holds everything generated for an avatar: one
+        /// subfolder per effect, plus the shared mesh stacks.
+        /// </summary>
+        public static string GetAvatarFolder(GameObject avatarRoot) =>
+            $"Assets/SPSTools/{SanitizeFileName(avatarRoot.name)}";
 
         /// <summary>
         /// Alias for <see cref="GetConfigFolder"/>. Generated assets and the
@@ -189,19 +207,23 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Returns the blendshape name for a given index using this config's
+        /// naming pattern (see <see cref="FormatBlendshapeName"/>).
+        /// </summary>
+        public string GetBlendshapeName(int index, string defaultPrefix) =>
+            FormatBlendshapeName(blendshapeNamingPattern, index, defaultPrefix);
+
+        /// <summary>
         /// Returns the blendshape name for a given index.
-        /// Uses custom pattern if set (e.g. "TummyBulge{0}" → "TummyBulge1"),
+        /// Uses the pattern if it has a {0} slot (e.g. "TummyBulge{0}" → "TummyBulge1"),
         /// otherwise falls back to defaultPrefix + index (e.g. "SPSBulge_Pos1").
         /// </summary>
-        public string GetBlendshapeName(int index, string defaultPrefix)
-        {
-            if (!string.IsNullOrEmpty(blendshapeNamingPattern) &&
-                blendshapeNamingPattern.Contains("{0}"))
-            {
-                return string.Format(blendshapeNamingPattern, index);
-            }
-            return $"{defaultPrefix}{index}";
-        }
+        public static string FormatBlendshapeName(string pattern, int index, string defaultPrefix) =>
+            HasIndexSlot(pattern) ? string.Format(pattern, index) : $"{defaultPrefix}{index}";
+
+        /// <summary>Whether a naming pattern has the {0} slot for the index.</summary>
+        public static bool HasIndexSlot(string pattern) =>
+            !string.IsNullOrEmpty(pattern) && pattern.Contains("{0}");
 
         public static string GetRelativePath(Transform root, Transform target)
         {

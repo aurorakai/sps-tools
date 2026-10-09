@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using UnityEditor;
 using UnityEngine;
 
 namespace AuroraKai.SPSTools
@@ -29,35 +28,14 @@ namespace AuroraKai.SPSTools
         public string outputMeshPath = "";
         public string outputMeshGuid = "";
 
-        public void StoreOutputMesh(Mesh mesh)
-        {
-            outputMesh = mesh;
-            outputMeshPath = mesh != null ? AssetDatabase.GetAssetPath(mesh) : "";
-            outputMeshGuid = !string.IsNullOrEmpty(outputMeshPath)
-                ? AssetDatabase.AssetPathToGUID(outputMeshPath)
-                : "";
-        }
+        public void StoreOutputMesh(Mesh mesh) =>
+            MeshReferenceTracker.Store(mesh, out outputMesh, out outputMeshPath, out outputMeshGuid);
 
         public Mesh ResolveOutputMesh()
         {
-            outputMesh = ResolveStoredMesh(outputMesh, outputMeshPath, outputMeshGuid);
+            outputMesh = MeshReferenceTracker.LoadStored(
+                outputMesh, outputMeshPath, outputMeshGuid, out _);
             return outputMesh;
-        }
-
-        private static Mesh ResolveStoredMesh(Mesh mesh, string path, string guid)
-        {
-            if (mesh != null) return mesh;
-            string resolvedPath = path;
-            if (!string.IsNullOrEmpty(guid))
-            {
-                string guidPath = AssetDatabase.GUIDToAssetPath(guid);
-                if (!string.IsNullOrEmpty(guidPath))
-                    resolvedPath = guidPath;
-                else if (!string.IsNullOrEmpty(path) && AssetDatabase.AssetPathToGUID(path) != guid)
-                    return null;
-            }
-            if (string.IsNullOrEmpty(resolvedPath)) return null;
-            return AssetDatabase.LoadAssetAtPath<Mesh>(resolvedPath);
         }
     }
 
@@ -76,50 +54,23 @@ namespace AuroraKai.SPSTools
 
         public List<MeshStackLayer> layers = new List<MeshStackLayer>();
 
-        public void StoreBaseMesh(Mesh mesh)
-        {
-            baseMesh = mesh;
-            baseMeshPath = mesh != null ? AssetDatabase.GetAssetPath(mesh) : "";
-            baseMeshGuid = !string.IsNullOrEmpty(baseMeshPath)
-                ? AssetDatabase.AssetPathToGUID(baseMeshPath)
-                : "";
-        }
+        public void StoreBaseMesh(Mesh mesh) =>
+            MeshReferenceTracker.Store(mesh, out baseMesh, out baseMeshPath, out baseMeshGuid);
 
-        public void StoreComposedMesh(Mesh mesh)
-        {
-            composedMesh = mesh;
-            composedMeshPath = mesh != null ? AssetDatabase.GetAssetPath(mesh) : "";
-            composedMeshGuid = !string.IsNullOrEmpty(composedMeshPath)
-                ? AssetDatabase.AssetPathToGUID(composedMeshPath)
-                : "";
-        }
+        public void StoreComposedMesh(Mesh mesh) =>
+            MeshReferenceTracker.Store(mesh, out composedMesh, out composedMeshPath, out composedMeshGuid);
 
         public Mesh ResolveBaseMesh()
         {
-            baseMesh = ResolveStoredMesh(baseMesh, baseMeshPath, baseMeshGuid);
+            baseMesh = MeshReferenceTracker.LoadStored(baseMesh, baseMeshPath, baseMeshGuid, out _);
             return baseMesh;
         }
 
         public Mesh ResolveComposedMesh()
         {
-            composedMesh = ResolveStoredMesh(composedMesh, composedMeshPath, composedMeshGuid);
+            composedMesh = MeshReferenceTracker.LoadStored(
+                composedMesh, composedMeshPath, composedMeshGuid, out _);
             return composedMesh;
-        }
-
-        private static Mesh ResolveStoredMesh(Mesh mesh, string path, string guid)
-        {
-            if (mesh != null) return mesh;
-            string resolvedPath = path;
-            if (!string.IsNullOrEmpty(guid))
-            {
-                string guidPath = AssetDatabase.GUIDToAssetPath(guid);
-                if (!string.IsNullOrEmpty(guidPath))
-                    resolvedPath = guidPath;
-                else if (!string.IsNullOrEmpty(path) && AssetDatabase.AssetPathToGUID(path) != guid)
-                    return null;
-            }
-            if (string.IsNullOrEmpty(resolvedPath)) return null;
-            return AssetDatabase.LoadAssetAtPath<Mesh>(resolvedPath);
         }
     }
 }

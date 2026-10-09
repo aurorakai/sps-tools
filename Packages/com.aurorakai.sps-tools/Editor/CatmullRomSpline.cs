@@ -32,30 +32,6 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
-        /// Returns N evenly-spaced sample points along the spline's arc length.
-        /// </summary>
-        public static List<Vector3> SampleEvenlySpaced(List<Vector3> points, int sampleCount)
-        {
-            if (points == null || points.Count < 2 || sampleCount < 2)
-                return new List<Vector3>(points ?? new List<Vector3>());
-
-            // Build arc-length lookup table
-            int subdivisions = (points.Count - 1) * 50;
-            var lut = BuildArcLengthLUT(points, subdivisions);
-            float totalLength = lut[lut.Count - 1];
-
-            var samples = new List<Vector3>();
-            for (int i = 0; i < sampleCount; i++)
-            {
-                float targetLength = (i / (float)(sampleCount - 1)) * totalLength;
-                float t = LookupT(lut, targetLength, subdivisions);
-                samples.Add(Evaluate(points, t));
-            }
-
-            return samples;
-        }
-
-        /// <summary>
         /// Returns the total arc length of the spline (approximated).
         /// </summary>
         public static float ArcLength(List<Vector3> points, int subdivisions = 100)
@@ -63,27 +39,6 @@ namespace AuroraKai.SPSTools
             if (points == null || points.Count < 2) return 0f;
             var lut = BuildArcLengthLUT(points, subdivisions);
             return lut[lut.Count - 1];
-        }
-
-        /// <summary>
-        /// Returns an array of points for rendering the spline as a smooth polyline.
-        /// </summary>
-        public static Vector3[] ToPolyline(List<Vector3> points, int segmentsPerSpan = 10)
-        {
-            if (points == null || points.Count < 2)
-                return points?.ToArray() ?? new Vector3[0];
-
-            int spanCount = points.Count - 1;
-            int totalSegments = spanCount * segmentsPerSpan;
-            var result = new Vector3[totalSegments + 1];
-
-            for (int i = 0; i <= totalSegments; i++)
-            {
-                float t = (float)i / totalSegments;
-                result[i] = Evaluate(points, t);
-            }
-
-            return result;
         }
 
         /// <summary>
@@ -233,6 +188,14 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Pre-samples the spline at the density every region test uses
+        /// (generation, previews, overlay scan, subdivision, baking), so they
+        /// all agree on which vertices the path covers.
+        /// </summary>
+        public static SplineTube BuildTube(List<PathWaypoint> waypoints) =>
+            BuildTube(waypoints, Mathf.Max((waypoints?.Count ?? 0) * 8, 20));
+
+        /// <summary>
         /// Pre-samples the spline into a polyline of segments with interpolated radii.
         /// Use the returned SplineTube.DistanceToTube() for fast per-vertex queries.
         /// </summary>
@@ -310,27 +273,6 @@ namespace AuroraKai.SPSTools
             }
 
             return lut;
-        }
-
-        private static float LookupT(List<float> lut, float targetLength, int subdivisions)
-        {
-            // Binary search
-            int lo = 0, hi = lut.Count - 1;
-            while (lo < hi - 1)
-            {
-                int mid = (lo + hi) / 2;
-                if (lut[mid] < targetLength)
-                    lo = mid;
-                else
-                    hi = mid;
-            }
-
-            float segLength = lut[hi] - lut[lo];
-            float frac = segLength > 0.0001f
-                ? (targetLength - lut[lo]) / segLength
-                : 0f;
-
-            return (lo + frac) / subdivisions;
         }
     }
 }

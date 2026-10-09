@@ -7,7 +7,10 @@ namespace AuroraKai.SPSTools
     [CreateAssetMenu(fileName = "SPSBulge_Config", menuName = "SPS Effects/Bulge Config")]
     public class BulgeConfig : BaseEffectConfig
     {
-        public override string EffectTypeName => "Bulge";
+        /// <summary>The Bulge <see cref="BaseEffectConfig.EffectTypeName"/>.</summary>
+        public const string TypeName = "Bulge";
+
+        public override string EffectTypeName => TypeName;
 
 
         // Travel range (0-1 matches SPS socket output)
@@ -80,5 +83,12 @@ namespace AuroraKai.SPSTools
             float sigma = bulgeWidth / 3f;
             return Mathf.Exp(-(offset * offset) / (2f * sigma * sigma));
         }
+
+        /// <summary>
+        /// Blendshape weight (0-100 at full intensity) position <paramref name="pos"/>
+        /// gets in the clip centred on <paramref name="centerPos"/>.
+        /// </summary>
+        public float GetPositionWeight(int pos, int centerPos) =>
+            Mathf.Max(0f, GetBellCurveWeight(Mathf.Abs(pos - centerPos)) * 100f * bulgeIntensity);
     }
 }

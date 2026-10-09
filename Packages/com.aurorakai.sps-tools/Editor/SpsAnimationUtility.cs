@@ -7,6 +7,12 @@ namespace AuroraKai.SPSTools
 {
     public static class SpsAnimationUtility
     {
+        /// <summary>
+        /// Prefix of a SkinnedMeshRenderer blendshape weight's animated property
+        /// name: "blendShape." + the blendshape name.
+        /// </summary>
+        public const string BlendshapePropertyPrefix = "blendShape.";
+
         public static AnimationClip CreateBoneScaleClip(
             string bonePath, Vector3 scale,
             bool scaleX, bool scaleY, bool scaleZ)
@@ -133,6 +139,17 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Ensures the folder an asset path sits in exists, so the asset can be
+        /// created there.
+        /// </summary>
+        public static void EnsureParentFolder(string assetPath)
+        {
+            string folder = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
+            if (!string.IsNullOrEmpty(folder))
+                EnsureFolder(folder);
+        }
+
+        /// <summary>
         /// Creates output folder, cleaning existing animation clips and controllers.
         /// Call this before generating NEW assets (not when saving configs).
         /// </summary>
@@ -201,7 +218,7 @@ namespace AuroraKai.SPSTools
         {
             if (string.IsNullOrEmpty(blendshapeName)) return;
             clip.SetCurve(rendererPath, typeof(SkinnedMeshRenderer),
-                $"blendShape.{blendshapeName}",
+                BlendshapePropertyPrefix + blendshapeName,
                 new AnimationCurve(new Keyframe(0f, weight)));
         }
     }

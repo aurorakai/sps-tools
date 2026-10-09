@@ -220,7 +220,7 @@ namespace AuroraKai.SPSTools
         }
 
         private static object Field(object obj, string name) =>
-            DepthParameterDetector.GetFieldValueRecursive(obj, name);
+            ReflectionUtil.GetFieldValueRecursive(obj, name);
 
         private static Vector3 EvaluateBezier(
             Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t)

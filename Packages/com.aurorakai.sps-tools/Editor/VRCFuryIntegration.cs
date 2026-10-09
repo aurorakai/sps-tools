@@ -12,13 +12,23 @@ namespace AuroraKai.SPSTools
     /// </summary>
     public static class VRCFuryIntegration
     {
+        // The VRCFury component type, once found. Only a hit is kept: the editor
+        // window asks every repaint, and VRCFury may finish loading after the
+        // first ask. A domain reload clears it.
+        private static Type s_vrcFuryType;
+
         /// <summary>
         /// Returns true if VRCFury is installed and the FullController type is resolvable.
         /// </summary>
-        public static bool IsVRCFuryInstalled()
-        {
-            return FindType("VRCFury") != null;
-        }
+        public static bool IsVRCFuryInstalled() => FindVRCFuryType() != null;
+
+        private static Type FindVRCFuryType() => s_vrcFuryType ??= FindType("VRCFury");
+
+        /// <summary>
+        /// True for VRCFury's own assemblies (named "VRCFury" or containing "vrcfury").
+        /// </summary>
+        internal static bool IsVRCFuryAssembly(Assembly assembly) =>
+            assembly.GetName().Name.IndexOf("vrcfury", StringComparison.OrdinalIgnoreCase) >= 0;
 
         /// <summary>
         /// Returns the detected VRCFury version string, or "unknown".
@@ -29,8 +39,7 @@ namespace AuroraKai.SPSTools
             {
                 try
                 {
-                    if (!assembly.FullName.Contains("VRCFury") &&
-                        !assembly.FullName.Contains("vrcfury"))
+                    if (!IsVRCFuryAssembly(assembly))
                         continue;
 
                     // Try assembly version
@@ -59,24 +68,11 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
-        /// Creates a child GameObject under avatarRoot with a VRCFury FullController component.
+        /// Creates a child GameObject under avatarRoot with a VRCFury FullController
+        /// component and registers every provided depth parameter as a global param.
         /// If a child with the same name exists, it is replaced only after the
         /// new controller is fully configured.
         /// Returns the created GameObject, or null if VRCFury is not installed.
-        /// </summary>
-        public static GameObject CreateFullController(
-            GameObject avatarRoot,
-            string gameObjectName,
-            RuntimeAnimatorController controller,
-            string depthParameter)
-        {
-            return CreateFullController(
-                avatarRoot, gameObjectName, controller, new[] { depthParameter });
-        }
-
-        /// <summary>
-        /// Creates a child GameObject under avatarRoot with a VRCFury FullController
-        /// component and registers every provided depth parameter as a global param.
         /// </summary>
         public static GameObject CreateFullController(
             GameObject avatarRoot,
@@ -95,7 +91,7 @@ namespace AuroraKai.SPSTools
                 return null;
             }
 
-            var vrcFuryType = FindType("VRCFury");
+            var vrcFuryType = FindVRCFuryType();
             if (vrcFuryType == null)
             {
                 Debug.LogError("[SPS Effects] VRCFury is not installed. Cannot create FullController.");
@@ -258,12 +254,7 @@ namespace AuroraKai.SPSTools
 
         internal static Type FindType(string simpleName)
         {
-            return ReflectionUtil.FindType(asm =>
-                {
-                    var n = asm.FullName ?? "";
-                    return n.Contains("VRCFury") || n.Contains("vrcfury");
-                },
-                t => t.Name == simpleName)
+            return ReflectionUtil.FindType(IsVRCFuryAssembly, t => t.Name == simpleName)
                 ?? ReflectionUtil.FindType(t => t.Name == simpleName &&
                     (t.Namespace?.Contains("VRCFury") == true ||
                      t.Namespace?.Contains("vrcfury") == true));
@@ -271,11 +262,7 @@ namespace AuroraKai.SPSTools
 
         private static Type FindFeatureType(string simpleName)
         {
-            return ReflectionUtil.FindType(asm =>
-                {
-                    var n = asm.FullName ?? "";
-                    return n.Contains("VRCFury") || n.Contains("vrcfury");
-                },
+            return ReflectionUtil.FindType(IsVRCFuryAssembly,
                 t => !t.IsAbstract && !t.IsInterface
                      && t.Name == simpleName
                      && t.Namespace?.Contains("Feature") == true);
@@ -289,25 +276,11 @@ namespace AuroraKai.SPSTools
             var instance = Activator.CreateInstance(type);
 
             // Set version to latest to prevent upgrade migrations
-            FieldInfo versionField = null;
-            var current = type;
-            while (current != null && versionField == null)
-            {
-                versionField = current.GetField("version",
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                current = current.BaseType;
-            }
-
-            if (versionField != null)
-            {
-                var getLatestVersion = type.GetMethod("GetLatestVersion",
-                    BindingFlags.Instance | BindingFlags.Public);
-                if (getLatestVersion != null)
-                {
-                    int latest = (int)getLatestVersion.Invoke(instance, null);
-                    versionField.SetValue(instance, latest);
-                }
-            }
+            var getLatestVersion = type.GetMethod("GetLatestVersion",
+                BindingFlags.Instance | BindingFlags.Public);
+            if (getLatestVersion != null)
+                ReflectionUtil.SetFieldIfExists(instance, "version",
+                    (int)getLatestVersion.Invoke(instance, null));
 
             return instance;
         }

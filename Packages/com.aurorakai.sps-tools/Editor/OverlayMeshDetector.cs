@@ -13,7 +13,6 @@ namespace AuroraKai.SPSTools
         public struct Candidate
         {
             public SkinnedMeshRenderer renderer;
-            public float coveragePercent;       // % of THIS mesh's verts in range (informational)
             public int totalVerts;
             public int vertsInRange;
             public float densityVsPrimary;      // ratio of (this verts in range) / (primary verts in range), 0..1+
@@ -26,8 +25,8 @@ namespace AuroraKai.SPSTools
         public const int SuggestedMatchMinVerts = 5;
 
         /// <summary>
-        /// Returns every candidate (skipping primary) sorted by coverage desc.
-        /// Candidates with <0.1% coverage are dropped to keep the list manageable.
+        /// Returns every renderer (skipping primary) with vertices in the path's
+        /// affected region, most vertices in range first.
         /// </summary>
         public static List<Candidate> FindCandidateOverlays(
             GameObject avatarRoot,
@@ -38,7 +37,7 @@ namespace AuroraKai.SPSTools
             var results = new List<Candidate>();
             if (avatarRoot == null || path == null || path.Count == 0) return results;
 
-            var tube = CatmullRomSpline.BuildTube(path, Mathf.Max(path.Count * 8, 20));
+            var tube = CatmullRomSpline.BuildTube(path);
             var avatarTransform = avatarRoot.transform;
             var renderers = avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true);
 
@@ -65,15 +64,12 @@ namespace AuroraKai.SPSTools
                     int inRange = CountVertsInRange(r, bakedMesh, avatarTransform, tube);
                     if (inRange == 0) continue;  // mesh has zero presence in the affected region
 
-                    int total = r.sharedMesh.vertexCount;
-                    float coverage = total > 0 ? 100f * inRange / total : 0f;
                     float density = primaryInRange > 0 ? (float)inRange / primaryInRange : 0f;
 
                     results.Add(new Candidate
                     {
                         renderer = r,
-                        coveragePercent = coverage,
-                        totalVerts = total,
+                        totalVerts = r.sharedMesh.vertexCount,
                         vertsInRange = inRange,
                         densityVsPrimary = density
                     });

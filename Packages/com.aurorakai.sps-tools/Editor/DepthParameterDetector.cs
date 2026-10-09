@@ -30,13 +30,11 @@ namespace AuroraKai.SPSTools
             depthFxFloats.Count > 0 ? depthFxFloats[0] : "";
 
         /// <summary>
-        /// The socket's SPS2 guided path as it was when the socket was detected,
-        /// or null for a socket without one. Call <see cref="SpsGuidedPath.FromSocket"/>
-        /// on <see cref="component"/> for current world positions.
+        /// Whether the socket had an SPS2 guided path when it was detected. Call
+        /// <see cref="SpsGuidedPath.FromSocket"/> on <see cref="component"/> for
+        /// the path at its current world position.
         /// </summary>
-        public SpsGuidedPath guidedPath;
-
-        public bool HasGuidedPath => guidedPath != null;
+        public bool HasGuidedPath { get; set; }
 
         public string DisplayName =>
             !string.IsNullOrEmpty(socketName) ? socketName : gameObjectName;
@@ -87,24 +85,17 @@ namespace AuroraKai.SPSTools
             {
                 if (comp == null) continue;
 
+                // VRCFuryHapticSocket (the standard socket component), or a type
+                // named like one (fallback for when type resolution fails or the
+                // VRCFury version differs)
                 var compType = comp.GetType();
+                bool isSocket =
+                    (s_hapticSocketType != null && s_hapticSocketType.IsAssignableFrom(compType)) ||
+                    compType.Name.Contains("HapticSocket") || compType.Name.Contains("SPSSocket");
+                if (!isSocket) continue;
 
-                // Path 1: VRCFuryHapticSocket (the standard socket component)
-                if (s_hapticSocketType != null && s_hapticSocketType.IsAssignableFrom(compType))
-                {
-                    var socket = ExtractFromHapticSocket(comp, avatarRoot);
-                    if (socket != null) sockets.Add(socket);
-                    continue;
-                }
-
-                // Path 2: Component type name contains "HapticSocket" or "Socket"
-                // (fallback for when type resolution fails or VRCFury version differs)
-                string typeName = compType.Name;
-                if (typeName.Contains("HapticSocket") || typeName.Contains("SPSSocket"))
-                {
-                    var socket = ExtractFromHapticSocket(comp, avatarRoot);
-                    if (socket != null) sockets.Add(socket);
-                }
+                var socket = ExtractFromHapticSocket(comp, avatarRoot);
+                if (socket != null) sockets.Add(socket);
             }
 
             return sockets;
@@ -125,53 +116,6 @@ namespace AuroraKai.SPSTools
                 if (comp.GetType().FullName?.Contains("AvatarDescriptor") == true)
                     return comp;
             }
-            return null;
-        }
-
-        /// <summary>
-        /// Gets the FX layer AnimatorController from the VRC Avatar Descriptor.
-        /// VRC Avatar Descriptor has baseAnimationLayers[4] (FX layer index)
-        /// with an animatorController field.
-        /// Returns null if not found.
-        /// </summary>
-        public static RuntimeAnimatorController GetFXLayerController(GameObject avatarRoot)
-        {
-            if (avatarRoot == null) return null;
-
-            var descriptor = FindAvatarDescriptor(avatarRoot);
-            if (descriptor == null) return null;
-
-            // baseAnimationLayers is an array of CustomAnimLayer structs
-            object layers = GetFieldValueRecursive(descriptor, "baseAnimationLayers");
-            if (layers == null) return null;
-
-            if (layers is System.Array layerArray)
-            {
-                // Identify the FX layer by enum NAME rather than value — VRCSDK3
-                // reorders the AnimLayerType enum across versions (FX has been 4, 5,
-                // and 6 in different releases) and VRCFury-modified descriptors may
-                // reorder the baseAnimationLayers array itself, so neither
-                // `typeInt == N` nor `i == N` is a reliable index. Matching on the
-                // enum's string name ("FX") is stable across all versions.
-                for (int i = 0; i < layerArray.Length; i++)
-                {
-                    object layer = layerArray.GetValue(i);
-                    if (layer == null) continue;
-
-                    object typeVal = GetFieldValueRecursive(layer, "type");
-                    if (typeVal == null) continue;
-
-                    // Enum.ToString() yields the symbolic name, e.g. "FX", "Action".
-                    if (!string.Equals(typeVal.ToString(), "FX",
-                            StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    object controller = GetFieldValueRecursive(layer, "animatorController");
-                    if (controller is RuntimeAnimatorController rac)
-                        return rac;
-                }
-            }
-
             return null;
         }
 
@@ -347,11 +291,7 @@ namespace AuroraKai.SPSTools
                 stateActionsList.Add(fxFloat);
                 list.Add(depthAction);
 
-                EditorUtility.SetDirty(socketComponent);
-
-                if (!Application.isPlaying)
-                    UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
-                        socketComponent.gameObject.scene);
+                MarkSocketDirty(socketComponent);
 
                 rangeDesc = rangeDesc ?? "VRCFury default range (Meters)";
                 Debug.Log($"[SPS Effects] Added depth FX Float '{parameterName}' to " +
@@ -470,9 +410,7 @@ namespace AuroraKai.SPSTools
             bool fitted = false;
             foreach (object depthAction in depthActions)
             {
-                object state = GetFieldValueRecursive(depthAction, "actionSet");
-                if (GetFieldValueRecursive(state, "actions") is IList actions &&
-                    actions.Count > 1)
+                if (GetDepthActionActions(depthAction) is IList actions && actions.Count > 1)
                 {
                     Debug.LogWarning($"[SPS Effects] Depth animation for '{parameterName}' on " +
                         $"'{socketComponent.gameObject.name}' also drives other actions; " +
@@ -490,10 +428,7 @@ namespace AuroraKai.SPSTools
 
             if (!fitted) return false;
 
-            EditorUtility.SetDirty(socketComponent);
-            if (!Application.isPlaying)
-                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
-                    socketComponent.gameObject.scene);
+            MarkSocketDirty(socketComponent);
             return true;
         }
 
@@ -509,8 +444,7 @@ namespace AuroraKai.SPSTools
 
             foreach (object depthAction in depthList)
             {
-                object state = GetFieldValueRecursive(depthAction, "actionSet");
-                if (!(GetFieldValueRecursive(state, "actions") is IList actions)) continue;
+                if (!(GetDepthActionActions(depthAction) is IList actions)) continue;
 
                 foreach (object action in actions)
                 {
@@ -542,14 +476,7 @@ namespace AuroraKai.SPSTools
                 bool removed = false;
                 for (int depthIndex = depthList.Count - 1; depthIndex >= 0; depthIndex--)
                 {
-                    object depthAction = depthList[depthIndex];
-                    if (depthAction == null) continue;
-
-                    object state = GetFieldValueRecursive(depthAction, "actionSet");
-                    if (state == null) continue;
-
-                    object actions = GetFieldValueRecursive(state, "actions");
-                    if (!(actions is IList actionList)) continue;
+                    if (!(GetDepthActionActions(depthList[depthIndex]) is IList actionList)) continue;
 
                     bool removedFromDepthAction = false;
                     for (int actionIndex = actionList.Count - 1; actionIndex >= 0; actionIndex--)
@@ -569,11 +496,7 @@ namespace AuroraKai.SPSTools
                 if (!removed)
                     return false;
 
-                EditorUtility.SetDirty(socketComponent);
-
-                if (!Application.isPlaying)
-                    UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
-                        socketComponent.gameObject.scene);
+                MarkSocketDirty(socketComponent);
 
                 Debug.Log($"[SPS Effects] Removed depth FX Float '{parameterName}' " +
                     $"from SPS Socket on '{socketComponent.gameObject.name}'.");
@@ -584,42 +507,6 @@ namespace AuroraKai.SPSTools
                 Debug.LogError($"[SPS Effects] Failed to remove FX Float from socket: {e.Message}\n{e.StackTrace}");
                 return false;
             }
-        }
-
-        /// <summary>
-        /// Dumps all serialized properties of a component to the console.
-        /// </summary>
-        public static void DumpComponentProperties(Component comp)
-        {
-            if (comp == null) return;
-            var so = new SerializedObject(comp);
-            var prop = so.GetIterator();
-
-            Debug.Log($"[SPS Debug] === Component: {comp.GetType().FullName} " +
-                $"(Assembly: {comp.GetType().Assembly.GetName().Name}) ===");
-
-            if (prop.NextVisible(true))
-            {
-                do
-                {
-                    string refType = prop.propertyType == SerializedPropertyType.ManagedReference
-                        ? $" [{prop.managedReferenceFullTypename}]"
-                        : "";
-                    string value = prop.propertyType switch
-                    {
-                        SerializedPropertyType.String => $" = \"{prop.stringValue}\"",
-                        SerializedPropertyType.Float => $" = {prop.floatValue}",
-                        SerializedPropertyType.Integer => $" = {prop.intValue}",
-                        SerializedPropertyType.Boolean => $" = {prop.boolValue}",
-                        SerializedPropertyType.Enum => $" = {prop.enumValueIndex}",
-                        SerializedPropertyType.Vector2 => $" = {prop.vector2Value}",
-                        _ => ""
-                    };
-                    Debug.Log($"[SPS Debug] {prop.propertyPath} ({prop.propertyType}){refType}{value}");
-                }
-                while (prop.NextVisible(true));
-            }
-            so.Dispose();
         }
 
         // =====================================================================
@@ -638,25 +525,18 @@ namespace AuroraKai.SPSTools
 
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                string asmName = assembly.GetName().Name;
-                // VRCFury runtime assembly is typically named "VRCFury" or contains "vrcfury"
-                if (!asmName.Equals("VRCFury", StringComparison.OrdinalIgnoreCase) &&
-                    !asmName.Contains("vrcfury", StringComparison.OrdinalIgnoreCase))
+                if (!VRCFuryIntegration.IsVRCFuryAssembly(assembly))
                     continue;
 
                 Type[] types;
                 try
                 {
-                    types = assembly.GetTypes();
-                }
-                catch (ReflectionTypeLoadException e)
-                {
-                    types = e.Types;
+                    types = ReflectionUtil.GetLoadableTypes(assembly);
                 }
                 catch (Exception e)
                 {
                     Debug.LogWarning(
-                        $"[SPS Effects] Could not inspect VRCFury assembly '{asmName}' " +
+                        $"[SPS Effects] Could not inspect VRCFury assembly '{assembly.GetName().Name}' " +
                         $"for socket/action types: {e.Message}");
                     continue;
                 }
@@ -739,13 +619,8 @@ namespace AuroraKai.SPSTools
 
         private static Type FindTypeInVRCFury(string simpleName)
         {
-            return ReflectionUtil.FindType(asm =>
-                {
-                    string asmName = asm.GetName().Name;
-                    return asmName.Equals("VRCFury", StringComparison.OrdinalIgnoreCase)
-                        || asmName.Contains("vrcfury", StringComparison.OrdinalIgnoreCase);
-                },
-                t => t.Name == simpleName);
+            return ReflectionUtil.FindType(
+                VRCFuryIntegration.IsVRCFuryAssembly, t => t.Name == simpleName);
         }
 
         // =====================================================================
@@ -768,7 +643,7 @@ namespace AuroraKai.SPSTools
             // Scan depthActions2 for FxFloatAction entries
             socket.depthFxFloats = ExtractFxFloatsFromDepthActions(comp);
 
-            socket.guidedPath = SpsGuidedPath.FromSocket(comp);
+            socket.HasGuidedPath = SpsGuidedPath.FromSocket(comp) != null;
 
             return socket;
         }
@@ -787,14 +662,7 @@ namespace AuroraKai.SPSTools
 
             foreach (object depthAction in depthList)
             {
-                if (depthAction == null) continue;
-
-                object state = GetFieldValueRecursive(depthAction, "actionSet");
-                if (state == null) continue;
-
-                // Get actions list from State
-                object actions = GetFieldValueRecursive(state, "actions");
-                if (!(actions is IList actionList)) continue;
+                if (!(GetDepthActionActions(depthAction) is IList actionList)) continue;
 
                 foreach (object action in actionList)
                 {
@@ -816,38 +684,25 @@ namespace AuroraKai.SPSTools
         // Reflection helpers
         // =====================================================================
 
-        internal static object GetFieldValueRecursive(object obj, string fieldName)
+        private static object GetFieldValueRecursive(object obj, string fieldName) =>
+            ReflectionUtil.GetFieldValueRecursive(obj, fieldName);
+
+        private static bool SetFieldIfExists(object obj, string fieldName, object value) =>
+            ReflectionUtil.SetFieldIfExists(obj, fieldName, value);
+
+        /// <summary>
+        /// A depth action's list of actions (DepthActionNew.actionSet.actions),
+        /// or null if it has none.
+        /// </summary>
+        private static IList GetDepthActionActions(object depthAction) =>
+            GetFieldValueRecursive(GetFieldValueRecursive(depthAction, "actionSet"), "actions") as IList;
+
+        private static void MarkSocketDirty(Component socketComponent)
         {
-            if (obj == null) return null;
-            var type = obj.GetType();
-            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-            while (type != null)
-            {
-                var field = type.GetField(fieldName, flags);
-                if (field != null) return field.GetValue(obj);
-                type = type.BaseType;
-            }
-            return null;
-        }
-
-        internal static bool SetFieldIfExists(object obj, string fieldName, object value)
-        {
-            if (obj == null) return false;
-            var type = obj.GetType();
-            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-            while (type != null)
-            {
-                var field = type.GetField(fieldName, flags);
-                if (field != null)
-                {
-                    field.SetValue(obj, value);
-                    return true;
-                }
-                type = type.BaseType;
-            }
-            return false;
+            EditorUtility.SetDirty(socketComponent);
+            if (!Application.isPlaying)
+                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
+                    socketComponent.gameObject.scene);
         }
 
         private static bool IsFxFloatActionNamed(object action, string parameterName)

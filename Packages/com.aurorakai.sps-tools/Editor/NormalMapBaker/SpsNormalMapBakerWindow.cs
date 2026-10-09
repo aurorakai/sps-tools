@@ -26,16 +26,6 @@ namespace AuroraKai.SPSTools
             win.Show();
         }
 
-        /// <summary>Opens the window pre-scoped to the given Bulge config.</summary>
-        public static void OpenFor(BulgeConfig config)
-        {
-            var win = GetWindow<SpsNormalMapBakerWindow>("SPS Normal Map Baker");
-            win._config = config;
-            win._settings = NormalMapBakerSettings.FindOrCreateFor(config);
-            win.minSize = new Vector2(480, 520);
-            win.Show();
-        }
-
         private void OnEnable()
         {
             if (_config != null && _settings == null)
@@ -316,7 +306,6 @@ namespace AuroraKai.SPSTools
             };
 
             string outputFolder = _config.GetOutputFolder();
-            SpsAnimationUtility.EnsureFolder($"{outputFolder}/NormalMap");
 
             Log("Baking primary...");
             var primaryResult = NormalMapBaker.BakePrimary(inputs, _settings);
@@ -470,9 +459,7 @@ namespace AuroraKai.SPSTools
         {
             if (_config == null) return null;
             int positionCount = Mathf.Max(1, _config.PositionCount);
-            int middlePosition1Indexed = (positionCount / 2) + 1;
-            string folder = _config.GetOutputFolder();
-            return $"{folder}/SPSBulge_Pos{middlePosition1Indexed}.anim";
+            return BulgeGenerator.GetPositionClipPath(_config, positionCount / 2);
         }
 
         private static List<NormalMapBakerSettings.BakedOverlay> CopyOverlayBakes(
@@ -499,35 +486,12 @@ namespace AuroraKai.SPSTools
             return BaseEffectConfig.ResolveRenderer(_config.avatarRoot, path);
         }
 
-        private static string SanitizeSuffix(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "mesh";
-            var invalid = System.IO.Path.GetInvalidFileNameChars();
-            return string.Join("_", s.Split(invalid)).Replace(' ', '_');
-        }
-
         internal static string BuildTextureSuffix(string rendererPath, string rendererName)
         {
-            return $"{StableHash(rendererPath)}_{SanitizeSuffix(rendererName)}";
-        }
-
-        private static string StableHash(string value)
-        {
-            unchecked
-            {
-                const uint offset = 2166136261u;
-                const uint prime = 16777619u;
-                uint hash = offset;
-                if (!string.IsNullOrEmpty(value))
-                {
-                    for (int i = 0; i < value.Length; i++)
-                    {
-                        hash ^= value[i];
-                        hash *= prime;
-                    }
-                }
-                return hash.ToString("x8");
-            }
+            string name = string.IsNullOrEmpty(rendererName)
+                ? "mesh"
+                : BaseEffectConfig.SanitizeFileName(rendererName).Replace(' ', '_');
+            return $"{MeshStackService.StableHash(rendererPath)}_{name}";
         }
 
         private void Log(string line)

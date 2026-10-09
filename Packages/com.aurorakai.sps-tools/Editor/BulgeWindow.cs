@@ -52,6 +52,15 @@ namespace AuroraKai.SPSTools
         private Color[] _previewPosColors;
         private Vector3[] _previewPoints;
 
+        // Looking up the mesh stack searches the asset database, so the GUI
+        // reads these, refreshed once per Layout event by RefreshMeshStackState.
+        private bool _hasStackLayer;
+        private Mesh _stackComposedMesh;
+
+        private static GUIStyle s_graphLabelStyle;
+        private static GUIStyle s_graphRefLabelStyle;
+        private static GUIStyle s_graphCursorStyle;
+
         // =====================================================================
         // Abstract / virtual member implementations
         // =====================================================================
@@ -87,14 +96,7 @@ namespace AuroraKai.SPSTools
         protected override List<(float threshold, AnimationClip clip)> BuildPreviewThresholds()
             => BulgeGenerator.BuildPreviewThresholds(config, GetPreviewGuidedPath());
 
-        protected override string GenerateAssets()
-        {
-            EnsureLegacyStackMigration();
-            return BulgeGenerator.Generate(config,
-                new List<string> { config.depthParameter }, GetGuidedDepthMaps());
-        }
-
-        protected override string GenerateAssetsMulti(List<string> depthParameters)
+        protected override string GenerateAssets(List<string> depthParameters)
         {
             EnsureLegacyStackMigration();
             return BulgeGenerator.Generate(config, depthParameters, GetGuidedDepthMaps());
@@ -107,14 +109,9 @@ namespace AuroraKai.SPSTools
         private Dictionary<string, GuidedPathDepthMap> GetGuidedDepthMaps()
         {
             var maps = new Dictionary<string, GuidedPathDepthMap>();
-            if (config.enabledSocketIndices == null) return maps;
-
-            foreach (int idx in config.enabledSocketIndices)
+            foreach (var (socket, parameter) in GetEnabledSockets())
             {
-                if (idx < 0 || idx >= detectedSockets.Count) continue;
-                var socket = detectedSockets[idx];
-                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
-                if (string.IsNullOrEmpty(parameter) || maps.ContainsKey(parameter)) continue;
+                if (maps.ContainsKey(parameter)) continue;
 
                 var map = GuidedPathDepthMap.For(socket, parameter);
                 if (map != null) maps.Add(parameter, map);
@@ -170,6 +167,8 @@ namespace AuroraKai.SPSTools
 
         protected override void DrawEffectSpecificSections()
         {
+            RefreshMeshStackState();
+
             // Note: base OnGUI already adds Space(8) before calling this method
             DrawBulgeTravelRange();
             EditorGUILayout.Space(8);
@@ -181,14 +180,27 @@ namespace AuroraKai.SPSTools
             // Note: base OnGUI already adds Space(8) after this method
         }
 
+        /// <summary>
+        /// Re-reads whether this config is on the mesh stack, and the stack's
+        /// composed mesh, on Layout events. Every other GUI event in the same
+        /// pass reuses them.
+        /// </summary>
+        private void RefreshMeshStackState()
+        {
+            if (Event.current != null && Event.current.type != EventType.Layout) return;
+            _hasStackLayer = MeshStackService.HasBulgeLayer(config);
+            _stackComposedMesh = _hasStackLayer
+                ? MeshStackService.ResolveComposedMesh(config.avatarRoot, config.rendererPath)
+                : null;
+        }
+
         protected override bool CanPreview()
         {
             if (!base.CanPreview()) return false;
             if (config.EffectiveDeformationMode == DeformationMode.Blendshape)
             {
-                bool hasStackLayer = MeshStackService.HasBulgeLayer(config);
-                var genMesh = hasStackLayer
-                    ? MeshStackService.ResolveComposedMesh(config.avatarRoot, config.rendererPath)
+                var genMesh = _hasStackLayer
+                    ? _stackComposedMesh
                     : MeshReferenceTracker.ResolveMesh(config, "generated");
                 bool hasBlendshapes = config.positionBlendshapes.Count >= 2 ||
                     (genMesh != null && genMesh.blendShapeCount > 0);
@@ -338,17 +350,11 @@ namespace AuroraKai.SPSTools
         /// </summary>
         private bool DrawGuidedPathFollowStatus()
         {
-            if (config.enabledSocketIndices == null) return false;
-
             bool anyGuided = false;
             var seen = new HashSet<string>();
-            foreach (int idx in config.enabledSocketIndices)
+            foreach (var (socket, parameter) in GetEnabledSockets())
             {
-                if (idx < 0 || idx >= detectedSockets.Count) continue;
-                var socket = detectedSockets[idx];
-                if (!socket.HasGuidedPath) continue;
-                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
-                if (string.IsNullOrEmpty(parameter) || !seen.Add(parameter)) continue;
+                if (!socket.HasGuidedPath || !seen.Add(parameter)) continue;
 
                 var map = GuidedPathDepthMap.For(socket, parameter);
                 if (map == null)
@@ -639,7 +645,7 @@ namespace AuroraKai.SPSTools
                         PathDrawingTool.BeginDrawing(
                             targetRenderer.gameObject,
                             config.avatarRoot.transform,
-                            new Color(0.81f, 0.58f, 0.93f), // purple for Bulge
+                            ThemeColor,
                             hasPath ? config.pathWaypoints : null,
                             (waypoints) =>
                             {
@@ -743,11 +749,11 @@ namespace AuroraKai.SPSTools
                         config.blendshapeNamingPattern);
                     {
                         string pattern = config.blendshapeNamingPattern;
-                        bool hasSlot = !string.IsNullOrEmpty(pattern) && pattern.Contains("{0}");
+                        bool hasSlot = BaseEffectConfig.HasIndexSlot(pattern);
                         int positions = Mathf.Max(1, config.autoPositionCount);
 
-                        string Name(int i) =>
-                            hasSlot ? string.Format(pattern, i) : $"SPSBulge_Pos{i}";
+                        string Name(int i) => BaseEffectConfig.FormatBlendshapeName(
+                            pattern, i, BulgeGenerator.PositionPrefix);
 
                         string preview = positions == 1
                             ? Name(1)
@@ -853,35 +859,16 @@ namespace AuroraKai.SPSTools
 
                 // Restore Original Mesh button - show whenever we have a record,
                 // so the user can always get back to the pre-generation state
-                bool hasStackLayer = MeshStackService.HasBulgeLayer(config);
-                bool hasOriginalRecord = hasStackLayer ||
-                    !string.IsNullOrEmpty(config.originalMeshPath) || config.originalMesh != null;
-                if (hasOriginalRecord)
+                bool hasStackLayer = _hasStackLayer;
+                if (hasStackLayer || config.HasOriginalRecord)
                 {
                     if (hasStackLayer)
                     {
                         if (GUILayout.Button("Remove This Configuration From Mesh Stack"))
                         {
-                            if (ScenePreviewManager.IsPreviewing)
-                            {
-                                ScenePreviewManager.StopPreview();
-                                previewEntries = null;
-                            }
-                            try
-                            {
-                                var result = MeshStackService.RemoveBulgeConfig(config);
-                                if (blendshapeAutoGenerate)
-                                    config.positionBlendshapes.Clear();
-                                SaveConfig();
-                                statusMessage = $"Removed this configuration from {result.rendererCount} stacked mesh(es).";
-                                statusType = MessageType.Info;
-                            }
-                            catch (System.Exception e)
-                            {
-                                statusMessage = $"Restore failed: {e.Message}";
-                                statusType = MessageType.Error;
-                                Debug.LogException(e);
-                            }
+                            RunStackRestore(() => MeshStackService.RemoveBulgeConfig(config),
+                                "Removed this configuration from {0} stacked mesh(es).",
+                                clearGeneratedNames: true);
                         }
                     }
                     else
@@ -891,18 +878,8 @@ namespace AuroraKai.SPSTools
                         {
                             if (GUILayout.Button("Restore Original Mesh"))
                             {
-                                if (ScenePreviewManager.IsPreviewing)
-                                {
-                                    ScenePreviewManager.StopPreview();
-                                    previewEntries = null;
-                                }
-                                if (targetRenderer != null)
-                                {
-                                    Undo.RecordObject(targetRenderer, "Restore Original Mesh");
-                                    targetRenderer.sharedMesh = resolvedOriginal;
-                                }
-                                MeshReferenceTracker.StoreMesh(config, "original", null);
-                                MeshReferenceTracker.StoreMesh(config, "generated", null);
+                                StopScenePreview();
+                                RestorePrimaryMesh("Restore Original Mesh");
                                 if (blendshapeAutoGenerate)
                                     config.positionBlendshapes.Clear();
                             }
@@ -913,10 +890,7 @@ namespace AuroraKai.SPSTools
                                 $"Original mesh record exists but couldn't be loaded from:\n{config.originalMeshPath}",
                                 MessageType.Warning);
                             if (GUILayout.Button("Clear Original Mesh Record"))
-                            {
-                                MeshReferenceTracker.StoreMesh(config, "original", null);
-                                MeshReferenceTracker.StoreMesh(config, "generated", null);
-                            }
+                                MeshReferenceTracker.Clear(config);
                         }
                     }
                 }
@@ -948,28 +922,15 @@ namespace AuroraKai.SPSTools
                 return;
             }
 
-            if (ScenePreviewManager.IsPreviewing)
-            {
-                ScenePreviewManager.StopPreview();
-                previewEntries = null;
-            }
-
-            try
-            {
-                var result = MeshStackService.RemoveBulgeLayerForRenderer(
-                    config, entry.rendererPath);
-                MeshReferenceTracker.StoreMesh(entry, "original", null);
-                MeshReferenceTracker.StoreMesh(entry, "generated", null);
-                SaveConfig();
-                statusMessage = $"Removed this configuration from {result.rendererCount} stacked mesh(es).";
-                statusType = MessageType.Info;
-            }
-            catch (System.Exception e)
-            {
-                statusMessage = $"Restore failed: {e.Message}";
-                statusType = MessageType.Error;
-                Debug.LogException(e);
-            }
+            RunStackRestore(() =>
+                {
+                    var result = MeshStackService.RemoveBulgeLayerForRenderer(
+                        config, entry.rendererPath);
+                    MeshReferenceTracker.Clear(entry);
+                    return result;
+                },
+                "Removed this configuration from {0} stacked mesh(es).",
+                clearGeneratedNames: false);
         }
 
         protected override void RestoreAllMeshes()
@@ -986,22 +947,30 @@ namespace AuroraKai.SPSTools
                 "Restore All", "Cancel"))
                 return;
 
-            if (ScenePreviewManager.IsPreviewing)
-            {
-                ScenePreviewManager.StopPreview();
-                previewEntries = null;
-            }
+            RunStackRestore(() => MeshStackService.RestoreAllBulgeLayers(config),
+                "Restored {0} mesh stack(s) to their base meshes.",
+                clearGeneratedNames: true);
+        }
 
+        /// <summary>
+        /// Ends the preview and runs <paramref name="restore"/> to take Bulge
+        /// layers off the mesh stacks, then saves the config and reports the
+        /// number of stacked meshes changed (formatted into <paramref name="doneMessage"/>).
+        /// </summary>
+        private void RunStackRestore(
+            Func<MeshStackBuildResult> restore, string doneMessage, bool clearGeneratedNames)
+        {
+            StopScenePreview();
             try
             {
-                var result = MeshStackService.RestoreAllBulgeLayers(config);
-                if (blendshapeAutoGenerate)
+                var result = restore();
+                if (clearGeneratedNames && blendshapeAutoGenerate)
                     config.positionBlendshapes.Clear();
                 SaveConfig();
-                statusMessage = $"Restored {result.rendererCount} mesh stack(s) to their base meshes.";
+                statusMessage = string.Format(doneMessage, result.rendererCount);
                 statusType = MessageType.Info;
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
                 statusMessage = $"Restore failed: {e.Message}";
                 statusType = MessageType.Error;
@@ -1031,7 +1000,7 @@ namespace AuroraKai.SPSTools
             if (GUILayout.Button("+ Add Blendshape", GUILayout.Width(130)))
             {
                 config.positionBlendshapes.Add(
-                    $"SPSBulge_Pos{config.positionBlendshapes.Count + 1}");
+                    $"{BulgeGenerator.PositionPrefix}{config.positionBlendshapes.Count + 1}");
             }
 
             EditorGUILayout.HelpBox(
@@ -1076,8 +1045,6 @@ namespace AuroraKai.SPSTools
                 new Vector3(graphX, refY),
                 new Vector3(graphX + graphW, refY));
 
-            float intensityScale = config.bulgeIntensity;
-
             // The same position depths the blend tree uses, following the
             // previewed socket's guided path when it has one.
             int posCount = config.PositionCount;
@@ -1086,14 +1053,7 @@ namespace AuroraKai.SPSTools
             if (posCount < 2 && !guided)
             {
                 posCount = 3;
-                layout = new BulgeDepthLayout
-                {
-                    restUntil = config.depthRangeStart,
-                    holdFrom = config.depthRangeEnd
-                };
-                var evenDepths = BulgeGenerator.ComputePositionDepths(config, posCount);
-                for (int pos = 0; pos < posCount; pos++)
-                    layout.stops.Add((evenDepths[pos], pos));
+                layout = BulgeGenerator.BuildEvenLayout(config, posCount);
             }
 
             // For each position, compute its weight at each position-clip's depth
@@ -1125,8 +1085,7 @@ namespace AuroraKai.SPSTools
                     // The blend tree interpolates between position clips.
                     // At each position's depth threshold, that position has its full weight.
                     // Between thresholds, weights blend linearly.
-                    float weight = ComputePositionWeightAtDepth(
-                        pos, depth, layout, intensityScale);
+                    float weight = ComputePositionWeightAtDepth(pos, depth, layout);
 
                     float yPixel = graphBottom - Mathf.Min(weight, 1.5f) / 1.5f * graphH;
                     _previewPoints[s] = new Vector3(xPixel, yPixel);
@@ -1159,19 +1118,27 @@ namespace AuroraKai.SPSTools
             }
 
             // Labels
-            var labelStyle = new GUIStyle(EditorStyles.miniLabel)
+            if (s_graphLabelStyle == null)
             {
-                normal = { textColor = new Color(1f, 1f, 1f, 0.5f) },
-                fontSize = 9
-            };
-            GUI.Label(new Rect(rect.x + 2f, rect.y + 2f, 60, 14), "Weight", labelStyle);
-            GUI.Label(new Rect(graphX + graphW - 40f, graphBottom, 40, 14), "Depth", labelStyle);
-            GUI.Label(new Rect(graphX - 2f, graphBottom, 20, 14), "0", labelStyle);
-            GUI.Label(new Rect(graphX + graphW - 8f, graphBottom, 20, 14), "1", labelStyle);
+                s_graphLabelStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    normal = { textColor = new Color(1f, 1f, 1f, 0.5f) },
+                    fontSize = 9
+                };
+                s_graphRefLabelStyle = new GUIStyle(s_graphLabelStyle)
+                    { alignment = TextAnchor.MiddleRight };
+                s_graphCursorStyle = new GUIStyle(s_graphLabelStyle)
+                {
+                    normal = { textColor = Color.white },
+                    alignment = TextAnchor.MiddleCenter
+                };
+            }
+            GUI.Label(new Rect(rect.x + 2f, rect.y + 2f, 60, 14), "Weight", s_graphLabelStyle);
+            GUI.Label(new Rect(graphX + graphW - 40f, graphBottom, 40, 14), "Depth", s_graphLabelStyle);
+            GUI.Label(new Rect(graphX - 2f, graphBottom, 20, 14), "0", s_graphLabelStyle);
+            GUI.Label(new Rect(graphX + graphW - 8f, graphBottom, 20, 14), "1", s_graphLabelStyle);
 
-            var refLabelStyle = new GUIStyle(labelStyle)
-            { alignment = TextAnchor.MiddleRight };
-            GUI.Label(new Rect(graphX + graphW + 2f, refY - 7f, 35, 14), "100%", refLabelStyle);
+            GUI.Label(new Rect(graphX + graphW + 2f, refY - 7f, 35, 14), "100%", s_graphRefLabelStyle);
 
             // Depth cursor -- follows the scene preview slider
             if (ScenePreviewManager.IsPreviewing || previewDepth > 0.001f)
@@ -1183,13 +1150,8 @@ namespace AuroraKai.SPSTools
                     new Vector3(cursorX, graphBottom));
 
                 // Depth value label at cursor
-                var cursorStyle = new GUIStyle(labelStyle)
-                {
-                    normal = { textColor = Color.white },
-                    alignment = TextAnchor.MiddleCenter
-                };
                 GUI.Label(new Rect(cursorX - 15f, graphTop - 14f, 30, 14),
-                    previewDepth.ToString("F2"), cursorStyle);
+                    previewDepth.ToString("F2"), s_graphCursorStyle);
             }
         }
 
@@ -1198,7 +1160,7 @@ namespace AuroraKai.SPSTools
         /// has at a given depth value. Mirrors the actual threshold interpolation.
         /// </summary>
         private float ComputePositionWeightAtDepth(
-            int pos, float depth, BulgeDepthLayout layout, float intensityScale)
+            int pos, float depth, BulgeDepthLayout layout)
         {
             var stops = layout.stops;
             if (stops.Count == 0 || depth <= layout.restUntil) return 0f;
@@ -1213,15 +1175,14 @@ namespace AuroraKai.SPSTools
 
             float lowerDepth = lower >= 0 ? stops[lower].depth : layout.restUntil;
             float lowerWeight = lower >= 0
-                ? GetClipWeightForPosition(pos, stops[lower].position, intensityScale)
+                ? GetClipWeightForPosition(pos, stops[lower].position)
                 : 0f;
 
             // After the last position: hold at its clip
             if (lower + 1 >= stops.Count) return lowerWeight;
 
             float upperDepth = stops[lower + 1].depth;
-            float upperWeight = GetClipWeightForPosition(
-                pos, stops[lower + 1].position, intensityScale);
+            float upperWeight = GetClipWeightForPosition(pos, stops[lower + 1].position);
 
             float range = upperDepth - lowerDepth;
             float t = range > 0.0001f
@@ -1230,11 +1191,9 @@ namespace AuroraKai.SPSTools
             return Mathf.Max(0f, Mathf.Lerp(lowerWeight, upperWeight, t));
         }
 
-        private float GetClipWeightForPosition(int pos, int centerPos, float intensityScale)
-        {
-            int offset = Mathf.Abs(pos - centerPos);
-            return Mathf.Max(0f, config.GetBellCurveWeight(offset) * intensityScale);
-        }
+        // The position clip's weight as a fraction (1 = 100%).
+        private float GetClipWeightForPosition(int pos, int centerPos) =>
+            config.GetPositionWeight(pos, centerPos) / 100f;
 
         // =====================================================================
         // Show Normals overlay (Advanced → Show Normals)
@@ -1283,7 +1242,10 @@ namespace AuroraKai.SPSTools
             if (_unchangedSegments == null || _unchangedSegments.Length < maxPairs)
                 _unchangedSegments = new Vector3[maxPairs];
 
-            var rendererTransform = targetRenderer.transform;
+            // One matrix and rotation for the whole loop: a Transform call per
+            // vertex was thousands of native calls every scene repaint.
+            var localToWorld = targetRenderer.transform.localToWorldMatrix;
+            var rotation = targetRenderer.transform.rotation;
             int changedCount = 0;
             int unchangedCount = 0;
 
@@ -1292,8 +1254,8 @@ namespace AuroraKai.SPSTools
                 bool changed = _hasNormalDelta[v];
                 if (_highlightChanged && !changed) continue;
 
-                Vector3 worldPos = rendererTransform.TransformPoint(_bakedVertsList[v]);
-                Vector3 worldNormal = rendererTransform.TransformDirection(_bakedNormalsList[v]);
+                Vector3 worldPos = localToWorld.MultiplyPoint3x4(_bakedVertsList[v]);
+                Vector3 worldNormal = rotation * _bakedNormalsList[v];
                 Vector3 tip = worldPos + worldNormal * _normalLength;
 
                 if (changed)

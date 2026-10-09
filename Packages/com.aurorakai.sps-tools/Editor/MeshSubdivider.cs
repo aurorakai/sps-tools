@@ -17,13 +17,15 @@ namespace AuroraKai.SPSTools
         /// <summary>
         /// Subdivides triangles in the tube region defined by the path waypoints.
         /// Returns a new mesh with additional geometry in the affected area.
-        /// The original mesh is not modified.
+        /// The original mesh is not modified. Pass <paramref name="copyBlendShapes"/>
+        /// false when the result's blendshapes won't be used, to skip copying them.
         /// </summary>
         public static Mesh SubdivideInRegion(
             Mesh sourceMesh, List<PathWaypoint> path,
             Transform meshTransform, Transform avatarRoot,
             Vector3[] worldRefVerts = null,
-            int passes = 1)
+            int passes = 1,
+            bool copyBlendShapes = true)
         {
             var mesh = Object.Instantiate(sourceMesh);
             var refs = worldRefVerts;
@@ -31,7 +33,7 @@ namespace AuroraKai.SPSTools
             for (int pass = 0; pass < passes; pass++)
             {
                 EditorUtility.DisplayProgressBar("Subdividing Mesh", $"Pass {pass+1}/{passes}...", (float)pass / passes);
-                mesh = SubdividePass(mesh, path, meshTransform, avatarRoot, refs);
+                mesh = SubdividePass(mesh, path, meshTransform, avatarRoot, refs, copyBlendShapes);
                 // After pass 0 the vert count grew; refs only describe the input mesh,
                 // so we drop them and fall back to bind-pose-of-subdivided-mesh for
                 // subsequent passes (the affected band is already a superset by virtue
@@ -45,7 +47,7 @@ namespace AuroraKai.SPSTools
         private static Mesh SubdividePass(
             Mesh mesh, List<PathWaypoint> path,
             Transform meshTransform, Transform avatarRoot,
-            Vector3[] worldRefVerts)
+            Vector3[] worldRefVerts, bool copyBlendShapes)
         {
             var vertices = mesh.vertices;
             var normals = mesh.normals;
@@ -65,8 +67,7 @@ namespace AuroraKai.SPSTools
             bool hasColors = colors != null && colors.Length == vertCount;
 
             // Build tube for region testing
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
+            var tube = CatmullRomSpline.BuildTube(path);
 
             // Mark which vertices are inside the tube (with some margin)
             var isAffected = new bool[vertCount];
@@ -170,44 +171,72 @@ namespace AuroraKai.SPSTools
             if (!hasNormals) result.RecalculateNormals();
             if (!hasTangents) result.RecalculateTangents();
 
-            // Copy blend shapes from source
-            for (int bs = 0; bs < mesh.blendShapeCount; bs++)
+            if (copyBlendShapes)
+                CopyBlendShapes(mesh, result, vertCount, newVertices.Count, edgeMidpoints);
+
+            Object.DestroyImmediate(mesh);
+            return result;
+        }
+
+        /// <summary>
+        /// Copies every blendshape frame from <paramref name="source"/> to the
+        /// subdivided <paramref name="result"/>, giving each edge midpoint the
+        /// average of its edge's deltas.
+        /// </summary>
+        private static void CopyBlendShapes(
+            Mesh source, Mesh result, int vertCount, int newVertCount,
+            Dictionary<long, int> edgeMidpoints)
+        {
+            if (source.blendShapeCount == 0) return;
+
+            int midCount = edgeMidpoints.Count;
+            var edgeA = new int[midCount];
+            var edgeB = new int[midCount];
+            var mids = new int[midCount];
+            int m = 0;
+            foreach (var kvp in edgeMidpoints)
             {
-                string bsName = mesh.GetBlendShapeName(bs);
-                int frameCount = mesh.GetBlendShapeFrameCount(bs);
+                edgeA[m] = (int)(kvp.Key >> 32);
+                edgeB[m] = (int)(kvp.Key & 0xFFFFFFFFL);
+                mids[m] = kvp.Value;
+                m++;
+            }
+
+            // Reused for every frame: AddBlendShapeFrame copies them, and every
+            // index past vertCount is an edge midpoint that's overwritten below.
+            var dv = new Vector3[vertCount];
+            var dn = new Vector3[vertCount];
+            var dt = new Vector3[vertCount];
+            var newDV = new Vector3[newVertCount];
+            var newDN = new Vector3[newVertCount];
+            var newDT = new Vector3[newVertCount];
+
+            for (int bs = 0; bs < source.blendShapeCount; bs++)
+            {
+                string bsName = source.GetBlendShapeName(bs);
+                int frameCount = source.GetBlendShapeFrameCount(bs);
                 for (int f = 0; f < frameCount; f++)
                 {
-                    float weight = mesh.GetBlendShapeFrameWeight(bs, f);
-                    var dv = new Vector3[vertCount];
-                    var dn = new Vector3[vertCount];
-                    var dt = new Vector3[vertCount];
-                    mesh.GetBlendShapeFrameVertices(bs, f, dv, dn, dt);
+                    float weight = source.GetBlendShapeFrameWeight(bs, f);
+                    source.GetBlendShapeFrameVertices(bs, f, dv, dn, dt);
 
-                    // Expand to new vertex count (new vertices get zero deltas)
-                    var newDV = new Vector3[newVertices.Count];
-                    var newDN = new Vector3[newVertices.Count];
-                    var newDT = new Vector3[newVertices.Count];
                     System.Array.Copy(dv, newDV, vertCount);
                     System.Array.Copy(dn, newDN, vertCount);
                     System.Array.Copy(dt, newDT, vertCount);
 
-                    // Interpolate deltas for edge midpoint vertices
-                    foreach (var kvp in edgeMidpoints)
+                    // Edges join original vertices, so the midpoints only read
+                    // the copied part.
+                    for (int i = 0; i < midCount; i++)
                     {
-                        int va = (int)(kvp.Key >> 32);
-                        int vb = (int)(kvp.Key & 0xFFFFFFFFL);
-                        int mid = kvp.Value;
-                        newDV[mid] = (newDV[va] + newDV[vb]) * 0.5f;
-                        newDN[mid] = (newDN[va] + newDN[vb]) * 0.5f;
-                        newDT[mid] = (newDT[va] + newDT[vb]) * 0.5f;
+                        int va = edgeA[i], vb = edgeB[i];
+                        newDV[mids[i]] = (newDV[va] + newDV[vb]) * 0.5f;
+                        newDN[mids[i]] = (newDN[va] + newDN[vb]) * 0.5f;
+                        newDT[mids[i]] = (newDT[va] + newDT[vb]) * 0.5f;
                     }
 
                     result.AddBlendShapeFrame(bsName, weight, newDV, newDN, newDT);
                 }
             }
-
-            Object.DestroyImmediate(mesh);
-            return result;
         }
 
         /// <summary>

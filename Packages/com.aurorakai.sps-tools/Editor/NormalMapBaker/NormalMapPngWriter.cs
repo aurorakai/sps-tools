@@ -19,9 +19,7 @@ namespace AuroraKai.SPSTools
             if (string.IsNullOrEmpty(assetPath))
                 throw new System.ArgumentException("assetPath is empty", nameof(assetPath));
 
-            string dir = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
-            if (!string.IsNullOrEmpty(dir))
-                SpsAnimationUtility.EnsureFolder(dir);
+            SpsAnimationUtility.EnsureParentFolder(assetPath);
 
             byte[] pngBytes = baked.EncodeToPNG();
             File.WriteAllBytes(assetPath, pngBytes);

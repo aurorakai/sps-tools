@@ -14,12 +14,17 @@ namespace AuroraKai.SPSTools
         private const float FullRangeEpsilon = 0.001f;
 
         /// <summary>
-        /// Generates all assets for a Bulge configuration. Returns the controller path.
+        /// Default name of a position's blendshape and clip, followed by its
+        /// 1-based index (e.g. "SPSBulge_Pos1").
         /// </summary>
-        public static string Generate(BulgeConfig config)
-        {
-            return Generate(config, new List<string> { config.depthParameter });
-        }
+        internal const string PositionPrefix = "SPSBulge_Pos";
+
+        /// <summary>
+        /// Asset path of the clip <see cref="Generate"/> saves for the 0-based
+        /// position <paramref name="pos"/>.
+        /// </summary>
+        internal static string GetPositionClipPath(BulgeConfig config, int pos) =>
+            $"{config.GetOutputFolder()}/{PositionPrefix}{pos + 1}.anim";
 
         /// <summary>
         /// Generates the controller with one blend tree layer per depth
@@ -54,7 +59,7 @@ namespace AuroraKai.SPSTools
             {
                 if (positionClips[pos] != null)
                     SpsAnimationUtility.SaveClip(positionClips[pos], folder,
-                        $"SPSBulge_Pos{pos + 1}");
+                        $"{PositionPrefix}{pos + 1}");
             }
 
             string controllerPath = $"{folder}/SPSBulge_Controller.controller";
@@ -65,8 +70,6 @@ namespace AuroraKai.SPSTools
                 controllerPath);
 
             AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-
             return controllerPath;
         }
 
@@ -163,6 +166,15 @@ namespace AuroraKai.SPSTools
                 }
             }
 
+            return BuildEvenLayout(config, posCount);
+        }
+
+        /// <summary>
+        /// <paramref name="posCount"/> positions spread evenly over the
+        /// config's depth range.
+        /// </summary>
+        internal static BulgeDepthLayout BuildEvenLayout(BulgeConfig config, int posCount)
+        {
             var layout = new BulgeDepthLayout();
             if (config == null) return layout;
             layout.restUntil = config.depthRangeStart;
@@ -243,12 +255,11 @@ namespace AuroraKai.SPSTools
                 config.positionBlendshapes.Count != config.autoPositionCount)
                 return null;
 
-            // Matches the position t-values BlendshapeGenerator centres each shape on.
             int count = config.autoPositionCount;
             for (int pos = 0; pos < count; pos++)
             {
-                float t = count > 1 ? (float)pos / (count - 1) : 0.5f;
-                CatmullRomSpline.EvaluateWithAttributes(config.pathWaypoints, t,
+                CatmullRomSpline.EvaluateWithAttributes(config.pathWaypoints,
+                    BlendshapeGenerator.PositionT(pos, count),
                     out Vector3 local, out _, out _);
                 centres.Add(root.TransformPoint(local));
             }
@@ -301,16 +312,9 @@ namespace AuroraKai.SPSTools
             else
             {
                 // Intensity scales the blendshape weight: 0=off, 0.5=50%, 1.0=100%, 2.0=overdrive
-                float intensityScale = config.bulgeIntensity;
-
                 var blendshapeWeights = new List<(string blendshapeName, float weight)>();
-
                 for (int i = 0; i < positionIds.Count; i++)
-                {
-                    int offset = Mathf.Abs(i - centerPos);
-                    float bsWeight = config.GetBellCurveWeight(offset) * 100f * intensityScale;
-                    blendshapeWeights.Add((positionIds[i], Mathf.Max(0f, bsWeight)));
-                }
+                    blendshapeWeights.Add((positionIds[i], config.GetPositionWeight(i, centerPos)));
 
                 return SpsAnimationUtility.CreateMultiBlendshapeClip(
                     GetAllRendererPaths(config), blendshapeWeights);
@@ -367,7 +371,7 @@ namespace AuroraKai.SPSTools
             // Auto-generated blendshape names using config's naming pattern
             var names = new List<string>();
             for (int i = 0; i < Mathf.Max(0, config.autoPositionCount); i++)
-                names.Add(config.GetBlendshapeName(i + 1, "SPSBulge_Pos"));
+                names.Add(config.GetBlendshapeName(i + 1, PositionPrefix));
             return names;
         }
     }

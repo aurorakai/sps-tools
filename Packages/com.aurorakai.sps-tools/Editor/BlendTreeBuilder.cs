@@ -17,27 +17,10 @@ namespace AuroraKai.SPSTools
             List<(float threshold, AnimationClip clip)> entries,
             string savePath)
         {
-            return CreateMultiBlendTree(controllerName,
-                new List<string> { parameterName },
-                layerName, entries, savePath);
-        }
-
-        /// <summary>
-        /// Creates a controller with one blend tree layer per parameter.
-        /// All layers share the same clips and thresholds but each is driven
-        /// by a different parameter. Used for multi-socket support where
-        /// each socket has its own depth parameter.
-        /// </summary>
-        public static AnimatorController CreateMultiBlendTree(
-            string controllerName,
-            List<string> parameterNames,
-            string layerName,
-            List<(float threshold, AnimationClip clip)> entries,
-            string savePath)
-        {
-            var layers = new List<(string parameter, List<(float threshold, AnimationClip clip)> entries)>();
-            foreach (var paramName in parameterNames)
-                layers.Add((paramName, entries));
+            var layers = new List<(string parameter, List<(float threshold, AnimationClip clip)> entries)>
+            {
+                (parameterName, entries)
+            };
             return CreateLayeredBlendTree(controllerName, layers, layerName, savePath);
         }
 

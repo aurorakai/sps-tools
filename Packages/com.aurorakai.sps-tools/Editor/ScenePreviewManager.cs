@@ -22,8 +22,6 @@ namespace AuroraKai.SPSTools
         private static List<GameObject> s_enabledObjects = new List<GameObject>();
         private static bool s_isAutoAnimating;
         private static float s_lastSampledDepth = -1f;
-        private static AnimationClip s_cachedComposite;
-        private static bool s_cachedIsOwned; // true if we created it (safe to destroy)
         private static float s_autoAnimateTime;
         private static float s_autoAnimateDuration;
         private static List<(float threshold, AnimationClip clip)> s_autoAnimateEntries;
@@ -48,17 +46,20 @@ namespace AuroraKai.SPSTools
         private static readonly Dictionary<BlendshapeRef, float> s_originalWeights
             = new Dictionary<BlendshapeRef, float>();
 
-        // Resolved binding cache for the current composite clip - avoids per-tick
-        // GetCurveBindings/Find/Substring/GetEditorCurve allocation cost during auto-animate.
-        private struct ResolvedBinding
+        // The preview entries read once into a table: every blendshape any entry's
+        // clip animates, and each entry's value for it. Sampling a depth is then a
+        // lerp per blendshape - during auto-animate it runs every editor tick, and
+        // reading curves back out of clips there was the main cost.
+        private struct PreviewTarget
         {
             public SkinnedMeshRenderer renderer;
             public int blendshapeIndex;
             public string blendshapeName;
-            public AnimationCurve curve;
         }
-        private static AnimationClip s_resolvedForClip;
-        private static readonly List<ResolvedBinding> s_resolvedBindings = new List<ResolvedBinding>();
+        private static List<(float threshold, AnimationClip clip)> s_tableEntries;
+        private static readonly List<PreviewTarget> s_targets = new List<PreviewTarget>();
+        // Per entry, the value for each target, or NaN where its clip doesn't animate it.
+        private static float[][] s_entryValues;
 
         // One-shot warning set for blendshape names that cannot be resolved on a
         // bound renderer (e.g. the user renamed the shape on the mesh after
@@ -118,29 +119,15 @@ namespace AuroraKai.SPSTools
             if (targetPaths.Count > 0)
             {
                 s_previewRendererPath = targetPaths[0];
-                var rendererTransform = avatarRoot.transform.Find(s_previewRendererPath);
-                if (rendererTransform != null)
-                {
-                    s_previewStartRenderer = rendererTransform.GetComponent<SkinnedMeshRenderer>();
-                    if (s_previewStartRenderer != null)
-                        s_previewStartMesh = s_previewStartRenderer.sharedMesh;
-                }
+                s_previewStartRenderer = BaseEffectConfig.ResolveRenderer(
+                    avatarRoot, s_previewRendererPath);
+                if (s_previewStartRenderer != null)
+                    s_previewStartMesh = s_previewStartRenderer.sharedMesh;
             }
 
             // Register safety nets (unregister first to prevent double-registration)
-            EditorApplication.playModeStateChanged -= OnPlayModeChanged;
-            AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;
-            UnityEditor.SceneManagement.EditorSceneManager.sceneSaving -= OnSceneSaving;
-            UnityEditor.SceneManagement.EditorSceneManager.sceneOpening -= OnSceneOpening;
-            EditorApplication.quitting -= OnEditorQuitting;
-            Undo.undoRedoPerformed -= OnUndoRedo;
-
-            EditorApplication.playModeStateChanged += OnPlayModeChanged;
-            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
-            UnityEditor.SceneManagement.EditorSceneManager.sceneSaving += OnSceneSaving;
-            UnityEditor.SceneManagement.EditorSceneManager.sceneOpening += OnSceneOpening;
-            EditorApplication.quitting += OnEditorQuitting;
-            Undo.undoRedoPerformed += OnUndoRedo;
+            SetSafetyNets(false);
+            SetSafetyNets(true);
         }
 
         public static void SampleAtDepth(
@@ -154,11 +141,8 @@ namespace AuroraKai.SPSTools
             if (s_previewStartMesh != null && s_previewRendererPath != null)
             {
                 if (s_previewStartRenderer == null)
-                {
-                    var rendererTransform = s_avatarRoot.transform.Find(s_previewRendererPath);
-                    if (rendererTransform != null)
-                        s_previewStartRenderer = rendererTransform.GetComponent<SkinnedMeshRenderer>();
-                }
+                    s_previewStartRenderer = BaseEffectConfig.ResolveRenderer(
+                        s_avatarRoot, s_previewRendererPath);
                 if (s_previewStartRenderer != null
                     && s_previewStartRenderer.sharedMesh != s_previewStartMesh)
                 {
@@ -171,135 +155,218 @@ namespace AuroraKai.SPSTools
             if (!force && Mathf.Abs(depth - s_lastSampledDepth) < 0.001f) return;
             s_lastSampledDepth = depth;
 
-            // Only destroy if we created it (interpolated clip), not a source clip
-            if (s_cachedComposite != null && s_cachedIsOwned)
-                UnityEngine.Object.DestroyImmediate(s_cachedComposite);
-
-            s_cachedComposite = CompositeClipAtDepth(depth, entries, out s_cachedIsOwned);
-            if (s_cachedComposite != null)
-                ApplyClipDirectly(s_cachedComposite);
+            ApplyAtDepth(depth, entries);
 
             SceneView.RepaintAll();
         }
 
         /// <summary>
-        /// Writes the clip's blendshape curve values directly to each referenced
-        /// SkinnedMeshRenderer via SetBlendShapeWeight. Bypasses AnimationMode so
-        /// the avatar's bone pose stays untouched. Snapshots original weights on
-        /// first write so StopPreview can restore them cleanly.
-        ///
-        /// The composite clip is rebuilt every depth sample, but its bindings rarely
-        /// change between samples - we resolve renderer+index+curve once per clip
-        /// instance and reuse during the per-tick hot loop.
+        /// Writes the blendshape weights the entries give at <paramref name="depth"/>,
+        /// interpolating between the bracketing thresholds the way Unity's 1D
+        /// blend tree does at runtime.
         /// </summary>
-        private static void ApplyClipDirectly(AnimationClip clip)
+        private static void ApplyAtDepth(
+            float depth, List<(float threshold, AnimationClip clip)> entries)
         {
-            if (s_avatarRoot == null || clip == null) return;
+            if (entries == null || entries.Count == 0) return;
+            if (!ReferenceEquals(entries, s_tableEntries) || s_entryValues.Length != entries.Count)
+                BuildPreviewTable(entries);
 
-            if (clip != s_resolvedForClip)
-                ResolveClipBindings(clip);
-
-            for (int i = 0; i < s_resolvedBindings.Count; i++)
+            // Find bracketing entries
+            int lowerIdx = 0;
+            for (int i = 0; i < entries.Count; i++)
             {
-                var rb = s_resolvedBindings[i];
-                if (rb.renderer == null || rb.curve == null) continue;
+                if (entries[i].threshold <= depth)
+                    lowerIdx = i;
+                else
+                    break;
+            }
+            int upperIdx = Mathf.Min(lowerIdx + 1, entries.Count - 1);
 
-                // The mesh-swap guard in SampleAtDepth only watches the PRIMARY
-                // renderer path. If any other bound renderer swaps meshes, the
-                // cached blendshape index can stay in range while pointing at a
-                // different name. Re-resolve by name on demand so preview keeps
-                // driving the intended blendshape instead of a stale slot.
-                var mesh = rb.renderer.sharedMesh;
-                if (mesh == null) continue;
+            // Exact match or same clip: that clip's values. Otherwise lerp every
+            // blendshape either clip animates, missing values counting as 0.
+            bool blend = lowerIdx != upperIdx && entries[lowerIdx].clip != entries[upperIdx].clip;
+            float t = 0f;
+            if (blend)
+            {
+                float range = entries[upperIdx].threshold - entries[lowerIdx].threshold;
+                t = range > 0.0001f
+                    ? Mathf.Clamp01((depth - entries[lowerIdx].threshold) / range)
+                    : 0f;
+            }
 
-                int blendshapeIndex = rb.blendshapeIndex;
-                if (blendshapeIndex < 0
-                    || blendshapeIndex >= mesh.blendShapeCount
-                    || mesh.GetBlendShapeName(blendshapeIndex) != rb.blendshapeName)
+            var lower = s_entryValues[lowerIdx];
+            var upper = s_entryValues[upperIdx];
+            for (int k = 0; k < s_targets.Count; k++)
+            {
+                float lowerVal = lower[k];
+                float upperVal = upper[k];
+                if (!blend)
                 {
-                    int oldIndex = blendshapeIndex;
-                    blendshapeIndex = mesh.GetBlendShapeIndex(rb.blendshapeName);
-                    if (blendshapeIndex < 0)
-                    {
-                        // Warn once per (renderer, blendshape-name) combo so the
-                        // user notices a stale binding without console spam during
-                        // the 10-30 Hz auto-animate tick.
-                        var key = (rb.renderer.GetInstanceID(), rb.blendshapeName);
-                        if (s_warnedMissingBlendshapes.Add(key))
-                        {
-                            Debug.LogWarning(
-                                $"[SPS] Blendshape '{rb.blendshapeName}' not found on " +
-                                $"renderer '{rb.renderer.name}'. This binding will be skipped " +
-                                "during preview. Regenerate the blendshape if this is unexpected.");
-                        }
-                        continue;
-                    }
-
-                    // If the blendshape moved to a different index (e.g. mesh was
-                    // swapped), restore the old slot. Snapshot the current weight at
-                    // the old index before writing — keyed by NAME so a later StopPreview
-                    // can find it via the new mesh's name lookup.
-                    if (oldIndex != blendshapeIndex
-                        && oldIndex >= 0 && oldIndex < mesh.blendShapeCount)
-                    {
-                        // The binding's name (rb.blendshapeName) is what was at oldIndex
-                        // before the swap — that's where we already snapshotted the user's
-                        // pre-preview value. Use that key, not mesh.GetBlendShapeName(oldIndex)
-                        // (which on the new mesh is whatever the swap shifted into oldIndex).
-                        var oldBref = new BlendshapeRef { renderer = rb.renderer, name = rb.blendshapeName };
-                        if (!s_originalWeights.TryGetValue(oldBref, out float restoreValue))
-                        {
-                            // Rebind fired on the very first sample, before any snapshot —
-                            // use the current slot value as a safe fallback.
-                            restoreValue = rb.renderer.GetBlendShapeWeight(oldIndex);
-                            s_originalWeights[oldBref] = restoreValue;
-                        }
-                        rb.renderer.SetBlendShapeWeight(oldIndex, restoreValue);
-                    }
-
-                    rb.blendshapeIndex = blendshapeIndex;
-                    s_resolvedBindings[i] = rb;
+                    if (!float.IsNaN(lowerVal)) ApplyWeight(k, lowerVal);
                 }
-
-                var bref = new BlendshapeRef { renderer = rb.renderer, name = rb.blendshapeName };
-                if (!s_originalWeights.ContainsKey(bref))
-                    s_originalWeights[bref] = rb.renderer.GetBlendShapeWeight(blendshapeIndex);
-
-                rb.renderer.SetBlendShapeWeight(blendshapeIndex, rb.curve.Evaluate(0f));
+                else if (!float.IsNaN(lowerVal) || !float.IsNaN(upperVal))
+                {
+                    ApplyWeight(k, Mathf.Lerp(
+                        float.IsNaN(lowerVal) ? 0f : lowerVal,
+                        float.IsNaN(upperVal) ? 0f : upperVal, t));
+                }
             }
         }
 
-        private static void ResolveClipBindings(AnimationClip clip)
+        /// <summary>
+        /// Reads every entry's clip into <see cref="s_targets"/> and
+        /// <see cref="s_entryValues"/>. Blendshapes that can't be found on the
+        /// avatar are left out.
+        /// </summary>
+        private static void BuildPreviewTable(List<(float threshold, AnimationClip clip)> entries)
         {
-            s_resolvedBindings.Clear();
-            s_resolvedForClip = clip;
+            s_tableEntries = entries;
+            s_targets.Clear();
 
-            const string BS_PREFIX = "blendShape.";
-            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+            var targetIndex = new Dictionary<(string path, string name), int>();
+            var valuesByClip = new Dictionary<AnimationClip, Dictionary<int, float>>();
+            foreach (var (_, clip) in entries)
             {
-                if (binding.type != typeof(SkinnedMeshRenderer)) continue;
-                if (!binding.propertyName.StartsWith(BS_PREFIX)) continue;
+                if (clip == null || valuesByClip.ContainsKey(clip)) continue;
 
-                string bsName = binding.propertyName.Substring(BS_PREFIX.Length);
-                var t = binding.path == ""
-                    ? s_avatarRoot.transform
-                    : s_avatarRoot.transform.Find(binding.path);
-                if (t == null) continue;
-
-                var r = t.GetComponent<SkinnedMeshRenderer>();
-                if (r == null || r.sharedMesh == null) continue;
-
-                int idx = r.sharedMesh.GetBlendShapeIndex(bsName);
-                if (idx < 0) continue;
-
-                s_resolvedBindings.Add(new ResolvedBinding
+                var values = new Dictionary<int, float>();
+                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
                 {
-                    renderer = r,
-                    blendshapeIndex = idx,
-                    blendshapeName = bsName,
-                    curve = AnimationUtility.GetEditorCurve(clip, binding)
-                });
+                    if (binding.type != typeof(SkinnedMeshRenderer)) continue;
+                    if (!binding.propertyName.StartsWith(SpsAnimationUtility.BlendshapePropertyPrefix)) continue;
+
+                    string bsName = binding.propertyName.Substring(
+                        SpsAnimationUtility.BlendshapePropertyPrefix.Length);
+                    if (!targetIndex.TryGetValue((binding.path, bsName), out int k))
+                    {
+                        k = AddTarget(binding.path, bsName);
+                        targetIndex[(binding.path, bsName)] = k;
+                    }
+                    if (k < 0) continue;
+
+                    var curve = AnimationUtility.GetEditorCurve(clip, binding);
+                    if (curve != null)
+                        values[k] = curve.Evaluate(0f);
+                }
+                valuesByClip[clip] = values;
             }
+
+            s_entryValues = new float[entries.Count][];
+            for (int e = 0; e < entries.Count; e++)
+            {
+                var row = new float[s_targets.Count];
+                for (int k = 0; k < row.Length; k++)
+                    row[k] = float.NaN;
+                var clip = entries[e].clip;
+                if (clip != null)
+                {
+                    foreach (var kv in valuesByClip[clip])
+                        row[kv.Key] = kv.Value;
+                }
+                s_entryValues[e] = row;
+            }
+        }
+
+        /// <summary>
+        /// Finds the blendshape a clip binding drives and adds it as a target.
+        /// Returns its index, or -1 if the renderer or blendshape isn't there.
+        /// </summary>
+        private static int AddTarget(string path, string blendshapeName)
+        {
+            var t = path == ""
+                ? s_avatarRoot.transform
+                : s_avatarRoot.transform.Find(path);
+            if (t == null) return -1;
+
+            var r = t.GetComponent<SkinnedMeshRenderer>();
+            if (r == null || r.sharedMesh == null) return -1;
+
+            int idx = r.sharedMesh.GetBlendShapeIndex(blendshapeName);
+            if (idx < 0) return -1;
+
+            s_targets.Add(new PreviewTarget
+            {
+                renderer = r,
+                blendshapeIndex = idx,
+                blendshapeName = blendshapeName
+            });
+            return s_targets.Count - 1;
+        }
+
+        /// <summary>
+        /// Writes a weight directly to a target's SkinnedMeshRenderer via
+        /// SetBlendShapeWeight. Bypasses AnimationMode so the avatar's bone pose
+        /// stays untouched. Snapshots the original weight on first write so
+        /// StopPreview can restore it cleanly.
+        /// </summary>
+        private static void ApplyWeight(int targetIndex, float value)
+        {
+            var target = s_targets[targetIndex];
+            if (target.renderer == null) return;
+
+            // The mesh-swap guard in SampleAtDepth only watches the PRIMARY
+            // renderer path. If any other bound renderer swaps meshes, the
+            // cached blendshape index can stay in range while pointing at a
+            // different name. Re-resolve by name on demand so preview keeps
+            // driving the intended blendshape instead of a stale slot.
+            var mesh = target.renderer.sharedMesh;
+            if (mesh == null) return;
+
+            int blendshapeIndex = target.blendshapeIndex;
+            if (blendshapeIndex < 0
+                || blendshapeIndex >= mesh.blendShapeCount
+                || mesh.GetBlendShapeName(blendshapeIndex) != target.blendshapeName)
+            {
+                int oldIndex = blendshapeIndex;
+                blendshapeIndex = mesh.GetBlendShapeIndex(target.blendshapeName);
+                if (blendshapeIndex < 0)
+                {
+                    // Warn once per (renderer, blendshape-name) combo so the
+                    // user notices a stale binding without console spam during
+                    // the 10-30 Hz auto-animate tick.
+                    var key = (target.renderer.GetInstanceID(), target.blendshapeName);
+                    if (s_warnedMissingBlendshapes.Add(key))
+                    {
+                        Debug.LogWarning(
+                            $"[SPS] Blendshape '{target.blendshapeName}' not found on " +
+                            $"renderer '{target.renderer.name}'. This binding will be skipped " +
+                            "during preview. Regenerate the blendshape if this is unexpected.");
+                    }
+                    return;
+                }
+
+                // If the blendshape moved to a different index (e.g. mesh was
+                // swapped), restore the old slot. Snapshot the current weight at
+                // the old index before writing — keyed by NAME so a later StopPreview
+                // can find it via the new mesh's name lookup.
+                if (oldIndex != blendshapeIndex
+                    && oldIndex >= 0 && oldIndex < mesh.blendShapeCount)
+                {
+                    // The target's name is what was at oldIndex before the swap —
+                    // that's where we already snapshotted the user's pre-preview
+                    // value. Use that key, not mesh.GetBlendShapeName(oldIndex)
+                    // (which on the new mesh is whatever the swap shifted into oldIndex).
+                    var oldBref = new BlendshapeRef { renderer = target.renderer, name = target.blendshapeName };
+                    if (!s_originalWeights.TryGetValue(oldBref, out float restoreValue))
+                    {
+                        // Rebind fired on the very first sample, before any snapshot —
+                        // use the current slot value as a safe fallback.
+                        restoreValue = target.renderer.GetBlendShapeWeight(oldIndex);
+                        s_originalWeights[oldBref] = restoreValue;
+                    }
+                    target.renderer.SetBlendShapeWeight(oldIndex, restoreValue);
+                }
+
+                target.blendshapeIndex = blendshapeIndex;
+                s_targets[targetIndex] = target;
+            }
+
+            var bref = new BlendshapeRef { renderer = target.renderer, name = target.blendshapeName };
+            if (!s_originalWeights.ContainsKey(bref))
+                s_originalWeights[bref] = target.renderer.GetBlendShapeWeight(blendshapeIndex);
+
+            target.renderer.SetBlendShapeWeight(blendshapeIndex, value);
         }
 
         public static void StartAutoAnimate(
@@ -336,6 +403,9 @@ namespace AuroraKai.SPSTools
         {
             s_isAutoAnimating = false;
             EditorApplication.update -= OnAutoAnimateUpdate;
+            // The callback captures the window that started the animation.
+            s_autoAnimateEntries = null;
+            s_onDepthChanged = null;
         }
 
         public static void StopPreview()
@@ -366,24 +436,16 @@ namespace AuroraKai.SPSTools
                 }
                 s_enabledObjects.Clear();
 
-                if (s_cachedComposite != null && s_cachedIsOwned)
-                    UnityEngine.Object.DestroyImmediate(s_cachedComposite);
-                s_cachedComposite = null;
-                s_cachedIsOwned = false;
-                s_resolvedForClip = null;
-                s_resolvedBindings.Clear();
+                s_tableEntries = null;
+                s_targets.Clear();
+                s_entryValues = null;
                 s_warnedMissingBlendshapes.Clear();
                 s_lastSampledDepth = -1f;
                 s_previewStartMesh = null;
                 s_previewRendererPath = null;
                 s_previewStartRenderer = null;
 
-                EditorApplication.playModeStateChanged -= OnPlayModeChanged;
-                AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;
-                UnityEditor.SceneManagement.EditorSceneManager.sceneSaving -= OnSceneSaving;
-                UnityEditor.SceneManagement.EditorSceneManager.sceneOpening -= OnSceneOpening;
-                EditorApplication.quitting -= OnEditorQuitting;
-                Undo.undoRedoPerformed -= OnUndoRedo;
+                SetSafetyNets(false);
 
                 IsPreviewing = false;
                 s_avatarRoot = null;
@@ -396,6 +458,32 @@ namespace AuroraKai.SPSTools
         }
 
         // --- Internal ---
+
+        /// <summary>
+        /// Subscribes (or unsubscribes) the hooks that end the preview before
+        /// anything could save or lose the previewed weights.
+        /// </summary>
+        private static void SetSafetyNets(bool subscribe)
+        {
+            if (subscribe)
+            {
+                EditorApplication.playModeStateChanged += OnPlayModeChanged;
+                AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneSaving += OnSceneSaving;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneOpening += OnSceneOpening;
+                EditorApplication.quitting += OnEditorQuitting;
+                Undo.undoRedoPerformed += OnUndoRedo;
+            }
+            else
+            {
+                EditorApplication.playModeStateChanged -= OnPlayModeChanged;
+                AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeReload;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneSaving -= OnSceneSaving;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneOpening -= OnSceneOpening;
+                EditorApplication.quitting -= OnEditorQuitting;
+                Undo.undoRedoPerformed -= OnUndoRedo;
+            }
+        }
 
         private static void OnAutoAnimateUpdate()
         {
@@ -421,8 +509,10 @@ namespace AuroraKai.SPSTools
                 : 1f - (phase - s_autoAnimateDuration) / s_autoAnimateDuration; // 1→0
             depth = Mathf.Clamp01(depth);
 
+            // Sampling can stop the preview, which clears the callback.
+            var onDepthChanged = s_onDepthChanged;
             SampleAtDepth(depth, s_autoAnimateEntries);
-            s_onDepthChanged?.Invoke(depth);
+            onDepthChanged?.Invoke(depth);
         }
 
         private static void OnPlayModeChanged(PlayModeStateChange state)
@@ -442,70 +532,5 @@ namespace AuroraKai.SPSTools
             => StopPreview();
         private static void OnEditorQuitting() => StopPreview();
         private static void OnUndoRedo() => StopPreview();
-
-        /// <summary>
-        /// Composites animation clips at a given depth using 1D blend tree interpolation.
-        /// Reads curve bindings from the bracketing clips and lerps property values.
-        /// </summary>
-        private static AnimationClip CompositeClipAtDepth(
-            float depth,
-            List<(float threshold, AnimationClip clip)> entries,
-            out bool isOwned)
-        {
-            isOwned = false;
-            if (entries == null || entries.Count == 0) return null;
-
-            // Find bracketing entries
-            int lowerIdx = 0;
-            for (int i = 0; i < entries.Count; i++)
-            {
-                if (entries[i].threshold <= depth)
-                    lowerIdx = i;
-                else
-                    break;
-            }
-            int upperIdx = Mathf.Min(lowerIdx + 1, entries.Count - 1);
-
-            var lowerClip = entries[lowerIdx].clip;
-            var upperClip = entries[upperIdx].clip;
-
-            // Exact match or same clip - return directly
-            if (lowerIdx == upperIdx || lowerClip == upperClip)
-                return lowerClip;
-
-            // Linear blend factor - matches how Unity's 1D blend tree interpolates at runtime
-            float range = entries[upperIdx].threshold - entries[lowerIdx].threshold;
-            float t = range > 0.0001f
-                ? (depth - entries[lowerIdx].threshold) / range
-                : 0f;
-            t = Mathf.Clamp01(t);
-
-            // Build interpolated clip from curve bindings (we own this clip)
-            isOwned = true;
-            var composited = new AnimationClip();
-            var lowerBindings = AnimationUtility.GetCurveBindings(lowerClip);
-            var upperBindings = AnimationUtility.GetCurveBindings(upperClip);
-
-            // Collect all unique bindings from both clips
-            var allBindings = new HashSet<EditorCurveBinding>();
-            foreach (var b in lowerBindings) allBindings.Add(b);
-            foreach (var b in upperBindings) allBindings.Add(b);
-
-            foreach (var binding in allBindings)
-            {
-                var lowerCurve = AnimationUtility.GetEditorCurve(lowerClip, binding);
-                var upperCurve = AnimationUtility.GetEditorCurve(upperClip, binding);
-
-                float lowerVal = lowerCurve != null ? lowerCurve.Evaluate(0f) : 0f;
-                float upperVal = upperCurve != null ? upperCurve.Evaluate(0f) : 0f;
-
-                float blended = Mathf.Lerp(lowerVal, upperVal, t);
-                var newCurve = new AnimationCurve(new Keyframe(0f, blended));
-
-                AnimationUtility.SetEditorCurve(composited, binding, newCurve);
-            }
-
-            return composited;
-        }
     }
 }

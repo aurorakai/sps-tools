@@ -165,22 +165,11 @@ namespace AuroraKai.SPSTools
         protected abstract List<(float threshold, AnimationClip clip)> BuildPreviewThresholds();
 
         /// <summary>
-        /// Generates assets (animator controller, animations, etc.) and returns
+        /// Generates assets (animator controller, animations, etc.) driven by
+        /// every depth parameter (one per enabled socket FX Float) and returns
         /// the path to the generated RuntimeAnimatorController asset.
         /// </summary>
-        protected abstract string GenerateAssets();
-
-        /// <summary>
-        /// Generate assets with multiple depth parameters for multi-socket support.
-        /// Default implementation calls GenerateAssets() (single parameter).
-        /// Override in subclass to pass parameter list to BlendTreeBuilder.CreateMultiBlendTree.
-        /// </summary>
-        protected virtual string GenerateAssetsMulti(List<string> depthParameters)
-        {
-            // Default: use primary parameter
-            config.depthParameter = depthParameters[0];
-            return GenerateAssets();
-        }
+        protected abstract string GenerateAssets(List<string> depthParameters);
 
         /// <summary>
         /// Collects depth parameter names from all enabled sockets.
@@ -189,6 +178,15 @@ namespace AuroraKai.SPSTools
         {
             return SocketFxFloatSelectionUtility.GetEnabledDepthParameters(
                 config, detectedSockets);
+        }
+
+        /// <summary>
+        /// Each enabled socket with its selected FX Float (see
+        /// <see cref="SocketFxFloatSelectionUtility.GetEnabledSockets"/>).
+        /// </summary>
+        protected IEnumerable<(DetectedSocket socket, string parameter)> GetEnabledSockets()
+        {
+            return SocketFxFloatSelectionUtility.GetEnabledSockets(config, detectedSockets);
         }
 
         /// <summary>
@@ -378,6 +376,7 @@ namespace AuroraKai.SPSTools
             if (ScenePreviewManager.IsPreviewing)
                 ScenePreviewManager.StopPreview();
             RestoreAllPreviewVisibility();
+            SetPreviewEntries(null);
             SceneView.duringSceneGui -= OnSceneGUIOverlay;
 
             AssemblyReloadEvents.beforeAssemblyReload -= AutoSaveBeforeReload;
@@ -387,9 +386,43 @@ namespace AuroraKai.SPSTools
         private void OnScenePreviewStopped()
         {
             RestoreAllPreviewVisibility();
-            previewEntries = null;
+            SetPreviewEntries(null);
             previewDepth = 0f;
             Repaint();
+        }
+
+        /// <summary>
+        /// Ends the scene preview if one is running. <see cref="OnScenePreviewStopped"/>
+        /// then restores overlay visibility and clears the preview state.
+        /// </summary>
+        protected static void StopScenePreview()
+        {
+            if (ScenePreviewManager.IsPreviewing)
+                ScenePreviewManager.StopPreview();
+        }
+
+        /// <summary>
+        /// Replaces the preview entries, destroying the old entries' in-memory
+        /// clips that the new ones don't reuse. Without this, every rebuild
+        /// (each drag of a setting while previewing) leaked a set of clips.
+        /// </summary>
+        private void SetPreviewEntries(List<(float threshold, AnimationClip clip)> entries)
+        {
+            var old = previewEntries;
+            previewEntries = entries;
+            if (old == null) return;
+
+            var kept = new HashSet<AnimationClip>();
+            if (entries != null)
+            {
+                foreach (var (_, clip) in entries)
+                    kept.Add(clip);
+            }
+            foreach (var (_, clip) in old)
+            {
+                if (clip != null && !EditorUtility.IsPersistent(clip) && kept.Add(clip))
+                    DestroyImmediate(clip);
+            }
         }
 
         // =====================================================================
@@ -402,6 +435,8 @@ namespace AuroraKai.SPSTools
         /// </summary>
         private void OnSceneGUIOverlay(SceneView sceneView)
         {
+            // Draw-only: nothing in the overlay handles input.
+            if (Event.current.type != EventType.Repaint) return;
             if (config == null || config.avatarRoot == null) return;
             if (PathDrawingTool.IsDrawing) return;
             if (config.pathWaypoints == null || config.pathWaypoints.Count == 0) return;
@@ -825,19 +860,7 @@ namespace AuroraKai.SPSTools
                                 selectedParamIndex, parameterOptions);
                             if (newParamIndex == socket.depthFxFloats.Count)
                             {
-                                string suggested =
-                                    SocketFxFloatSelectionUtility.MakeUniqueParameterName(
-                                        DepthParameterDetector.SuggestParameterName(socket),
-                                        socket);
-                                if (DepthParameterDetector.AddFxFloatToSocket(
-                                        socket.component, suggested,
-                                        SpsGuidedPath.FromSocket(socket.component)))
-                                {
-                                    SocketFxFloatSelectionUtility.SetSelectedParameter(
-                                        config, socket, suggested);
-                                    EditorUtility.SetDirty(config);
-                                    RefreshSockets();
-                                }
+                                AddFxFloat(socket, SuggestFxFloatName(socket));
                             }
                             else if (newParamIndex != selectedParamIndex)
                             {
@@ -868,22 +891,9 @@ namespace AuroraKai.SPSTools
                         {
                             EditorGUILayout.LabelField("No FX Float set", EditorStyles.miniLabel);
                             DrawGuidedPathStatus(socket, null);
-                            string suggested =
-                                SocketFxFloatSelectionUtility.MakeUniqueParameterName(
-                                    DepthParameterDetector.SuggestParameterName(socket),
-                                    socket);
+                            string suggested = SuggestFxFloatName(socket);
                             if (GUILayout.Button($"Add \"{suggested}\"", GUILayout.Height(18)))
-                            {
-                                if (DepthParameterDetector.AddFxFloatToSocket(
-                                        socket.component, suggested,
-                                        SpsGuidedPath.FromSocket(socket.component)))
-                                {
-                                    SocketFxFloatSelectionUtility.SetSelectedParameter(
-                                        config, socket, suggested);
-                                    EditorUtility.SetDirty(config);
-                                    RefreshSockets();
-                                }
-                            }
+                                AddFxFloat(socket, suggested);
                         }
 
                         EditorGUILayout.EndVertical();
@@ -899,16 +909,9 @@ namespace AuroraKai.SPSTools
                 }
 
                 // Set depthParameter from first enabled socket (for preview/backward compat)
-                foreach (int idx in config.enabledSocketIndices)
-                {
-                    if (idx < detectedSockets.Count && detectedSockets[idx].depthFxFloats.Count > 0)
-                    {
-                        config.depthParameter =
-                            SocketFxFloatSelectionUtility.GetSelectedParameter(
-                                config, detectedSockets[idx]);
-                        break;
-                    }
-                }
+                var enabledParameters = GetEnabledDepthParameters();
+                if (enabledParameters.Count > 0)
+                    config.depthParameter = enabledParameters[0];
             }
             else if (config.avatarRoot != null)
             {
@@ -936,6 +939,26 @@ namespace AuroraKai.SPSTools
         // =====================================================================
         // Socket helpers
         // =====================================================================
+
+        private static string SuggestFxFloatName(DetectedSocket socket) =>
+            SocketFxFloatSelectionUtility.MakeUniqueParameterName(
+                DepthParameterDetector.SuggestParameterName(socket), socket);
+
+        /// <summary>
+        /// Adds an FX Float to the socket's depth animations (fitted to its SPS2
+        /// guided path, if it has one) and selects it.
+        /// </summary>
+        private void AddFxFloat(DetectedSocket socket, string parameterName)
+        {
+            if (!DepthParameterDetector.AddFxFloatToSocket(
+                    socket.component, parameterName,
+                    SpsGuidedPath.FromSocket(socket.component)))
+                return;
+
+            SocketFxFloatSelectionUtility.SetSelectedParameter(config, socket, parameterName);
+            EditorUtility.SetDirty(config);
+            RefreshSockets();
+        }
 
         protected void ApplySocketSelection()
         {
@@ -991,16 +1014,9 @@ namespace AuroraKai.SPSTools
         protected List<string> GetUnfittedGuidedPathSockets()
         {
             var result = new List<string>();
-            if (config?.enabledSocketIndices == null) return result;
-
-            foreach (int idx in config.enabledSocketIndices)
+            foreach (var (socket, parameter) in GetEnabledSockets())
             {
-                if (idx < 0 || idx >= detectedSockets.Count) continue;
-                var socket = detectedSockets[idx];
                 if (!socket.HasGuidedPath) continue;
-
-                string parameter = SocketFxFloatSelectionUtility.GetSelectedParameter(config, socket);
-                if (string.IsNullOrEmpty(parameter)) continue;
                 if (DepthParameterDetector.TryGetFxFloatDepthRange(
                         socket.component, parameter, out string units, out _) &&
                     units == "Plugs")
@@ -1087,8 +1103,7 @@ namespace AuroraKai.SPSTools
                         if (!dup)
                         {
                             entry.rendererPath = GetRelativePath(config.avatarRoot.transform, picked.transform);
-                            MeshReferenceTracker.StoreMesh(entry, "original", null);
-                            MeshReferenceTracker.StoreMesh(entry, "generated", null);
+                            MeshReferenceTracker.Clear(entry);
                         }
                     }
                 }
@@ -1102,8 +1117,8 @@ namespace AuroraKai.SPSTools
                 EditorGUILayout.BeginHorizontal();
                 string status;
                 if (string.IsNullOrEmpty(entry.rendererPath)) status = "(empty - pick a renderer)";
-                else if (entry.generatedMesh != null || !string.IsNullOrEmpty(entry.generatedMeshPath)) status = "generated";
-                else if (entry.originalMesh != null || !string.IsNullOrEmpty(entry.originalMeshPath)) status = "original tracked";
+                else if (entry.HasGeneratedRecord) status = "generated";
+                else if (entry.HasOriginalRecord) status = "original tracked";
                 else status = "not yet generated";
 
                 // Visibility indicator - animation still works on hidden renderers
@@ -1112,8 +1127,7 @@ namespace AuroraKai.SPSTools
 
                 EditorGUILayout.LabelField(status, EditorStyles.miniLabel);
 
-                bool canRestore = entry.originalMesh != null || !string.IsNullOrEmpty(entry.originalMeshPath);
-                GUI.enabled = canRestore;
+                GUI.enabled = entry.HasOriginalRecord;
                 if (GUILayout.Button("Restore", GUILayout.Width(70), GUILayout.Height(18)))
                     RestoreSingleAdditionalMesh(entry);
                 GUI.enabled = true;
@@ -1186,7 +1200,7 @@ namespace AuroraKai.SPSTools
                 if (hash != previewConfigHash)
                 {
                     previewConfigHash = hash;
-                    previewEntries = BuildPreviewThresholds();
+                    SetPreviewEntries(BuildPreviewThresholds());
                     ScenePreviewManager.UpdateAutoAnimateEntries(previewEntries);
                     ScenePreviewManager.SampleAtDepth(previewDepth, previewEntries, force: true);
                 }
@@ -1203,8 +1217,8 @@ namespace AuroraKai.SPSTools
                 ScenePreviewManager.SampleAtDepth(previewDepth, previewEntries);
             }
             GUI.enabled = true;
-            EditorGUILayout.LabelField(previewDepth.ToString("F2"),
-                new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleRight },
+            s_depthValueStyle ??= new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleRight };
+            EditorGUILayout.LabelField(previewDepth.ToString("F2"), s_depthValueStyle,
                 GUILayout.Width(32));
             EditorGUILayout.EndHorizontal();
 
@@ -1218,7 +1232,7 @@ namespace AuroraKai.SPSTools
             {
                 if (GUILayout.Button("Preview", GUILayout.Height(26)))
                 {
-                    previewEntries = BuildPreviewThresholds();
+                    SetPreviewEntries(BuildPreviewThresholds());
 
                     var targetPaths = GetPreviewTargetPaths();
 
@@ -1246,7 +1260,7 @@ namespace AuroraKai.SPSTools
                         if (ScenePreviewManager.IsPreviewing)
                             ScenePreviewManager.StopPreview();
                         RestoreAllPreviewVisibility();
-                        previewEntries = null;
+                        SetPreviewEntries(null);
                     }
                 }
             }
@@ -1280,12 +1294,7 @@ namespace AuroraKai.SPSTools
 
                 // End Preview button
                 if (GUILayout.Button("End Preview", GUILayout.Height(26)))
-                {
-                    ScenePreviewManager.StopPreview();
-                    RestoreAllPreviewVisibility();
-                    previewEntries = null;
-                    previewDepth = 0f;
-                }
+                    StopScenePreview();
             }
 
             EditorGUILayout.EndHorizontal();
@@ -1311,8 +1320,7 @@ namespace AuroraKai.SPSTools
                     bool effectivelyVisible = IsRendererEffectivelyVisible(r);
                     bool shown = isOnForPreview || effectivelyVisible;
 
-                    bool notGenerated = entry.generatedMesh == null
-                        && string.IsNullOrEmpty(entry.generatedMeshPath);
+                    bool notGenerated = !entry.HasGeneratedRecord;
                     if (notGenerated) anyNotGenerated = true;
 
                     string suffix;
@@ -1456,10 +1464,10 @@ namespace AuroraKai.SPSTools
                 var tickColor = new Color(0.45f, 0.65f, 1f, 0.9f);
                 for (float x = r.x + pad; x < r.xMax - pad; x += 4f)
                     EditorGUI.DrawRect(new Rect(x, yEdge, 2f, 1f), tickColor);
+                s_thresholdLabelStyle ??= new GUIStyle(EditorStyles.miniLabel)
+                    { normal = { textColor = tickColor } };
                 GUI.Label(new Rect(r.x + pad + 2f, yEdge - 14f, r.width - pad * 2f - 4f, 14f),
-                    thresholdLabel,
-                    new GUIStyle(EditorStyles.miniLabel)
-                    { normal = { textColor = tickColor } });
+                    thresholdLabel, s_thresholdLabelStyle);
             }
 
             Color curveColor =
@@ -1485,14 +1493,17 @@ namespace AuroraKai.SPSTools
             string peakLabel = threshold > 0f
                 ? $"{displacementM * 1000f:F0} mm  (×{ratio:F2} threshold)"
                 : $"{displacementM * 1000f:F0} mm";
-            var labelStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                normal = { textColor = curveColor }
-            };
+            s_peakLabelStyle ??= new GUIStyle(EditorStyles.miniLabel)
+                { alignment = TextAnchor.MiddleCenter };
+            s_peakLabelStyle.normal.textColor = curveColor;
             GUI.Label(new Rect(r.center.x - 100f, yBase - peakH - 16f, 200f, 14f),
-                peakLabel, labelStyle);
+                peakLabel, s_peakLabelStyle);
         }
+
+        // Cached so the GUI doesn't allocate a style per event.
+        private static GUIStyle s_depthValueStyle;
+        private static GUIStyle s_thresholdLabelStyle;
+        private static GUIStyle s_peakLabelStyle;
 
         // Raw mesh-region edge length. Subdivision effect is applied at display time
         // (threshold = raw × 2^passes) rather than baked into the cache, so toggling
@@ -1559,7 +1570,8 @@ namespace AuroraKai.SPSTools
                     {
                         var curve = AnimationUtility.GetEditorCurve(entry.clip, b);
                         float val = curve != null ? curve.Evaluate(0f) : 0f;
-                        string prop = b.propertyName.Replace("blendShape.", "");
+                        string prop = b.propertyName.Replace(
+                            SpsAnimationUtility.BlendshapePropertyPrefix, "");
                         sb.Append($"{prop}={val:F1} ");
                     }
                     Debug.Log(sb.ToString());
@@ -1600,8 +1612,7 @@ namespace AuroraKai.SPSTools
                         config.avatarRoot, $"{EffectName} Generate");
 
                     // Generate assets - pass all parameters for multi-layer blend tree
-                    config.depthParameter = depthParams[0]; // primary for preview
-                    string controllerPath = GenerateAssetsMulti(depthParams);
+                    string controllerPath = GenerateAssets(depthParams);
 
                     // Apply VRCFury FullController with every depth parameter so
                     // multi-socket controllers keep all globals registered.
@@ -1737,11 +1748,6 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
-        /// Starts a new config preloaded with the current working config's settings.
-        /// Clears the tracked path and suffixes the name with " Copy" so Save creates
-        /// a separate asset. Next state is New.
-        /// </summary>
-        /// <summary>
         /// Produces a "Copy" variant of a base configuration name that doesn't
         /// accumulate " Copy" suffixes across repeated duplicates. "X" → "X Copy",
         /// "X Copy" → "X Copy 2", "X Copy N" → "X Copy N+1".
@@ -1770,6 +1776,11 @@ namespace AuroraKai.SPSTools
             return $"{baseName}{copySuffix}";
         }
 
+        /// <summary>
+        /// Starts a new config preloaded with the current working config's settings.
+        /// Clears the tracked path and suffixes the name with " Copy" so Save creates
+        /// a separate asset. Next state is New.
+        /// </summary>
         private void DuplicateCurrentConfig()
         {
             if (config == null) return;
@@ -1780,6 +1791,46 @@ namespace AuroraKai.SPSTools
             config = copy;
             CaptureSavedJson();
             Repaint();
+        }
+
+        /// <summary>
+        /// GenericMenu treats '/' in GUIContent.text as a submenu separator. Replaces
+        /// it with U+2215 DIVISION SLASH — visually identical, not a separator.
+        /// </summary>
+        private static string SafeMenuLabel(string raw)
+        {
+            return string.IsNullOrEmpty(raw) ? raw : raw.Replace('/', '∕');
+        }
+
+        /// <summary>
+        /// Adds a menu item that loads <paramref name="cfg"/>, labelled
+        /// "Name - Avatar" when <paramref name="withAvatar"/>, else just the name,
+        /// and checked when it's the tracked config.
+        /// </summary>
+        private void AddConfigMenuItem(
+            GenericMenu menu, TConfig cfg, bool withAvatar, string currentPath)
+        {
+            string path = AssetDatabase.GetAssetPath(cfg);
+            string label = cfg.configurationName;
+            if (withAvatar)
+            {
+                string avatarName = string.IsNullOrEmpty(cfg.avatarRootName)
+                    ? "Unknown Avatar" : cfg.avatarRootName;
+                label = $"{label} - {avatarName}";
+            }
+            menu.AddItem(new GUIContent(SafeMenuLabel(label)), path == currentPath,
+                () => LoadConfigFromAsset(cfg, path));
+        }
+
+        private static int CompareByName(TConfig a, TConfig b) =>
+            string.Compare(a.configurationName ?? "", b.configurationName ?? "",
+                StringComparison.OrdinalIgnoreCase);
+
+        private static int CompareByAvatarThenName(TConfig a, TConfig b)
+        {
+            int byAvatar = string.Compare(a.avatarRootName ?? "", b.avatarRootName ?? "",
+                StringComparison.OrdinalIgnoreCase);
+            return byAvatar != 0 ? byAvatar : CompareByName(a, b);
         }
 
         /// <summary>
@@ -1795,15 +1846,6 @@ namespace AuroraKai.SPSTools
         /// With no saved configs at all: just "+ New Configuration" and a disabled
         /// "(no saved configurations found)" info item.
         /// </summary>
-        /// <summary>
-        /// GenericMenu treats '/' in GUIContent.text as a submenu separator. Replaces
-        /// it with U+2215 DIVISION SLASH — visually identical, not a separator.
-        /// </summary>
-        private static string SafeMenuLabel(string raw)
-        {
-            return string.IsNullOrEmpty(raw) ? raw : raw.Replace('/', '∕');
-        }
-
         private void ShowConfigPickerMenu()
         {
             var menu = new GenericMenu();
@@ -1825,26 +1867,9 @@ namespace AuroraKai.SPSTools
             else if (string.IsNullOrEmpty(currentAvatarName))
             {
                 // No avatar: flat list "Name - Avatar" sorted by avatar then name.
-                all.Sort((a, b) =>
-                {
-                    int byAvatar = string.Compare(a.avatarRootName ?? "", b.avatarRootName ?? "",
-                        System.StringComparison.OrdinalIgnoreCase);
-                    if (byAvatar != 0) return byAvatar;
-                    return string.Compare(a.configurationName ?? "", b.configurationName ?? "",
-                        System.StringComparison.OrdinalIgnoreCase);
-                });
+                all.Sort(CompareByAvatarThenName);
                 foreach (var cfg in all)
-                {
-                    string path = AssetDatabase.GetAssetPath(cfg);
-                    string avatarName = string.IsNullOrEmpty(cfg.avatarRootName)
-                        ? "Unknown Avatar" : cfg.avatarRootName;
-                    string label = SafeMenuLabel($"{cfg.configurationName} - {avatarName}");
-                    bool isCurrent = path == currentPath;
-                    var captured = cfg;
-                    string capturedPath = path;
-                    menu.AddItem(new GUIContent(label), isCurrent,
-                        () => LoadConfigFromAsset(captured, capturedPath));
-                }
+                    AddConfigMenuItem(menu, cfg, withAvatar: true, currentPath);
             }
             else
             {
@@ -1860,43 +1885,17 @@ namespace AuroraKai.SPSTools
                         other.Add(cfg);
                 }
 
-                thisAvatar.Sort((a, b) => string.Compare(a.configurationName ?? "",
-                    b.configurationName ?? "", System.StringComparison.OrdinalIgnoreCase));
-                other.Sort((a, b) =>
-                {
-                    int byAvatar = string.Compare(a.avatarRootName ?? "", b.avatarRootName ?? "",
-                        System.StringComparison.OrdinalIgnoreCase);
-                    if (byAvatar != 0) return byAvatar;
-                    return string.Compare(a.configurationName ?? "", b.configurationName ?? "",
-                        System.StringComparison.OrdinalIgnoreCase);
-                });
+                thisAvatar.Sort(CompareByName);
+                other.Sort(CompareByAvatarThenName);
 
                 foreach (var cfg in thisAvatar)
-                {
-                    string path = AssetDatabase.GetAssetPath(cfg);
-                    bool isCurrent = path == currentPath;
-                    string label = SafeMenuLabel(cfg.configurationName);
-                    var captured = cfg;
-                    string capturedPath = path;
-                    menu.AddItem(new GUIContent(label), isCurrent,
-                        () => LoadConfigFromAsset(captured, capturedPath));
-                }
+                    AddConfigMenuItem(menu, cfg, withAvatar: false, currentPath);
 
                 if (other.Count > 0)
                 {
                     menu.AddSeparator("");
                     foreach (var cfg in other)
-                    {
-                        string path = AssetDatabase.GetAssetPath(cfg);
-                        string avatarName = string.IsNullOrEmpty(cfg.avatarRootName)
-                            ? "Unknown Avatar" : cfg.avatarRootName;
-                        string label = SafeMenuLabel($"{cfg.configurationName} - {avatarName}");
-                        bool isCurrent = path == currentPath;
-                        var captured = cfg;
-                        string capturedPath = path;
-                        menu.AddItem(new GUIContent(label), isCurrent,
-                            () => LoadConfigFromAsset(captured, capturedPath));
-                    }
+                        AddConfigMenuItem(menu, cfg, withAvatar: true, currentPath);
                 }
             }
 
@@ -2188,34 +2187,16 @@ namespace AuroraKai.SPSTools
             bool narrow = EditorGUIUtility.currentViewWidth < 370f;
             string label = narrow ? glyph : $"{glyph} {text}";
 
-            // Snapshot every state that GUILayout.Label might render from, set them
-            // all to the target color, then restore on exit. This kills the hover
-            // tint (miniLabel.hover.textColor differs from normal).
-            Color prevNormal   = s_statusBadgeStyle.normal.textColor;
-            Color prevHover    = s_statusBadgeStyle.hover.textColor;
-            Color prevActive   = s_statusBadgeStyle.active.textColor;
-            Color prevFocused  = s_statusBadgeStyle.focused.textColor;
-            Color prevOnNormal = s_statusBadgeStyle.onNormal.textColor;
-            Color prevOnHover  = s_statusBadgeStyle.onHover.textColor;
+            // Set every state GUILayout.Label might render from to the badge
+            // colour. This kills the hover tint (miniLabel.hover.textColor
+            // differs from normal). The style is only used here.
             s_statusBadgeStyle.normal.textColor   = color;
             s_statusBadgeStyle.hover.textColor    = color;
             s_statusBadgeStyle.active.textColor   = color;
             s_statusBadgeStyle.focused.textColor  = color;
             s_statusBadgeStyle.onNormal.textColor = color;
             s_statusBadgeStyle.onHover.textColor  = color;
-            try
-            {
-                GUILayout.Label(label, s_statusBadgeStyle, GUILayout.Width(narrow ? 24f : 90f));
-            }
-            finally
-            {
-                s_statusBadgeStyle.normal.textColor   = prevNormal;
-                s_statusBadgeStyle.hover.textColor    = prevHover;
-                s_statusBadgeStyle.active.textColor   = prevActive;
-                s_statusBadgeStyle.focused.textColor  = prevFocused;
-                s_statusBadgeStyle.onNormal.textColor = prevOnNormal;
-                s_statusBadgeStyle.onHover.textColor  = prevOnHover;
-            }
+            GUILayout.Label(label, s_statusBadgeStyle, GUILayout.Width(narrow ? 24f : 90f));
         }
 
         // =====================================================================
@@ -2356,9 +2337,7 @@ namespace AuroraKai.SPSTools
 
             foreach (var entry in config.additionalMeshes)
             {
-                bool notGenerated = entry.generatedMesh == null
-                    && string.IsNullOrEmpty(entry.generatedMeshPath);
-                if (!notGenerated) continue;
+                if (entry.HasGeneratedRecord) continue;
 
                 var r = ResolveAdditionalRenderer(entry);
                 if (r == null) continue;
@@ -2436,8 +2415,22 @@ namespace AuroraKai.SPSTools
                 Undo.RecordObject(r, "Restore Additional Mesh");
                 r.sharedMesh = orig;
             }
-            MeshReferenceTracker.StoreMesh(entry, "original", null);
-            MeshReferenceTracker.StoreMesh(entry, "generated", null);
+            MeshReferenceTracker.Clear(entry);
+        }
+
+        /// <summary>
+        /// Puts the primary renderer's tracked original mesh back, if there is
+        /// one, and forgets the tracked meshes.
+        /// </summary>
+        protected void RestorePrimaryMesh(string undoName)
+        {
+            var original = MeshReferenceTracker.ResolveMesh(config, "original");
+            if (targetRenderer != null && original != null)
+            {
+                Undo.RecordObject(targetRenderer, undoName);
+                targetRenderer.sharedMesh = original;
+            }
+            MeshReferenceTracker.Clear(config);
         }
 
         /// <summary>
@@ -2445,21 +2438,8 @@ namespace AuroraKai.SPSTools
         /// </summary>
         protected virtual void RestoreAllMeshes()
         {
-            if (ScenePreviewManager.IsPreviewing)
-            {
-                ScenePreviewManager.StopPreview();
-                previewEntries = null;
-            }
-
-            // Primary
-            var primaryOrig = MeshReferenceTracker.ResolveMesh(config, "original");
-            if (targetRenderer != null && primaryOrig != null)
-            {
-                Undo.RecordObject(targetRenderer, "Restore All Meshes");
-                targetRenderer.sharedMesh = primaryOrig;
-            }
-            MeshReferenceTracker.StoreMesh(config, "original", null);
-            MeshReferenceTracker.StoreMesh(config, "generated", null);
+            StopScenePreview();
+            RestorePrimaryMesh("Restore All Meshes");
 
             // Additionals
             if (config.additionalMeshes != null)

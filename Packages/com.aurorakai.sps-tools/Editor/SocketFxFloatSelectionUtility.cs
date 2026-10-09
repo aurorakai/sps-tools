@@ -55,22 +55,37 @@ namespace AuroraKai.SPSTools
             });
         }
 
-        public static List<string> GetEnabledDepthParameters(
+        /// <summary>
+        /// Each enabled socket with its selected FX Float, in the order they were
+        /// enabled. Sockets without an FX Float are left out; two sockets can
+        /// share a parameter.
+        /// </summary>
+        public static IEnumerable<(DetectedSocket socket, string parameter)> GetEnabledSockets(
             BaseEffectConfig config, List<DetectedSocket> detectedSockets)
         {
-            var result = new List<string>();
             if (config?.enabledSocketIndices == null || detectedSockets == null)
-                return result;
+                yield break;
 
             foreach (int idx in config.enabledSocketIndices)
             {
                 if (idx < 0 || idx >= detectedSockets.Count) continue;
 
-                string parameter = GetSelectedParameter(config, detectedSockets[idx]);
-                if (!string.IsNullOrEmpty(parameter) && !result.Contains(parameter))
+                var socket = detectedSockets[idx];
+                string parameter = GetSelectedParameter(config, socket);
+                if (!string.IsNullOrEmpty(parameter))
+                    yield return (socket, parameter);
+            }
+        }
+
+        public static List<string> GetEnabledDepthParameters(
+            BaseEffectConfig config, List<DetectedSocket> detectedSockets)
+        {
+            var result = new List<string>();
+            foreach (var (_, parameter) in GetEnabledSockets(config, detectedSockets))
+            {
+                if (!result.Contains(parameter))
                     result.Add(parameter);
             }
-
             return result;
         }
 

@@ -48,11 +48,13 @@ namespace AuroraKai.SPSTools
 
             var allBones = avatarRoot.GetComponentsInChildren<Transform>(true);
 
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
+            var tube = CatmullRomSpline.BuildTube(path);
 
-            // Find bones near the path
-            var candidates = new List<(Transform bone, float pathT, float dist)>();
+            // Find bones near the path. The chain starts from the one closest
+            // to the centerline, then greedily extends through the others.
+            var candidateSet = new HashSet<Transform>();
+            Transform seed = null;
+            float seedDist = float.MaxValue;
             foreach (var bone in allBones)
             {
                 // Skip the root itself and non-bone objects (those with renderers)
@@ -61,30 +63,21 @@ namespace AuroraKai.SPSTools
                 if (bone.GetComponent<MeshRenderer>() != null) continue;
 
                 Vector3 localPos = avatarRoot.InverseTransformPoint(bone.position);
-                float dist = tube.DistanceToTube(localPos, out _, out float pathT);
+                float dist = tube.DistanceToTube(localPos, out _);
+                if (dist >= maxDistance) continue;
 
-                if (dist < maxDistance)
-                    candidates.Add((bone, pathT, dist));
+                candidateSet.Add(bone);
+                if (dist < seedDist)
+                {
+                    seedDist = dist;
+                    seed = bone;
+                }
             }
 
-            if (candidates.Count == 0) return null;
-
-            // Sort by path position
-            candidates.Sort((a, b) => a.pathT.CompareTo(b.pathT));
-
-            // Filter to bones that form a connected chain
-            // Start with the bone closest to the path, then greedily extend
-            var chain = new List<Transform>();
-            var used = new HashSet<Transform>();
-
-            // Find the candidate closest to the centerline as the seed
-            candidates.Sort((a, b) => a.dist.CompareTo(b.dist));
-            var seed = candidates[0].bone;
-            candidates.Sort((a, b) => a.pathT.CompareTo(b.pathT));
+            if (seed == null) return null;
 
             // Walk up and down from seed, following parent-child relationships
             // that stay near the path
-            var candidateSet = new HashSet<Transform>(candidates.ConvertAll(c => c.bone));
 
             // Build chain by walking the hierarchy along the path
             Transform current = seed;

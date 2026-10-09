@@ -16,6 +16,7 @@ namespace AuroraKai.SPSTools
     {
         private const string StackFolderName = "MeshStacks";
         private const string GeneratedFolderName = "Generated";
+        private const string BulgeType = BulgeConfig.TypeName;
 
         private class StackRecord
         {
@@ -67,8 +68,7 @@ namespace AuroraKai.SPSTools
 
             config.EnsureStableConfigId();
 
-            var records = LoadStackRecords(config.avatarRoot);
-            try
+            return EditStacks(config.avatarRoot, records =>
             {
                 RegisterAssignedLegacyBulgeGenerations(
                     config.avatarRoot, records, config.stableConfigId);
@@ -77,7 +77,7 @@ namespace AuroraKai.SPSTools
                 if (order <= 0)
                     order = NextLayerOrder(records);
 
-                RemoveConfigLayers(records, config.stableConfigId, "Bulge");
+                RemoveConfigLayers(records, config.stableConfigId, BulgeType);
 
                 var participants = GetBulgeParticipants(config);
                 if (participants.Count == 0)
@@ -100,7 +100,7 @@ namespace AuroraKai.SPSTools
                     var record = GetOrCreateStackRecord(
                         records, config.avatarRoot, participant.rendererPath);
                     EnsureBaseMesh(record.stack, renderer,
-                        ResolveLegacyOriginal(config, participant));
+                        ResolveLegacyMesh(config, participant, "original"));
 
                     record.stack.layers.Add(new MeshStackLayer
                     {
@@ -123,12 +123,7 @@ namespace AuroraKai.SPSTools
                 var result = RebuildBulgeStacks(config.avatarRoot, records, config);
                 UpdateLegacyReferences(config, records);
                 return result;
-            }
-            catch
-            {
-                RestoreSnapshots(records);
-                throw;
-            }
+            });
         }
 
         public static MeshStackBuildResult RemoveBulgeConfig(BulgeConfig config)
@@ -138,28 +133,13 @@ namespace AuroraKai.SPSTools
             if (config.avatarRoot == null || string.IsNullOrEmpty(config.stableConfigId))
                 return new MeshStackBuildResult();
 
-            var records = LoadStackRecords(config.avatarRoot);
-            try
+            return EditStacks(config.avatarRoot, records =>
             {
-                RemoveConfigLayers(records, config.stableConfigId, "Bulge");
+                RemoveConfigLayers(records, config.stableConfigId, BulgeType);
                 var result = RebuildBulgeStacks(config.avatarRoot, records, config);
-                MeshReferenceTracker.StoreMesh(config, "original", null);
-                MeshReferenceTracker.StoreMesh(config, "generated", null);
-                if (config.additionalMeshes != null)
-                {
-                    foreach (var entry in config.additionalMeshes)
-                    {
-                        MeshReferenceTracker.StoreMesh(entry, "original", null);
-                        MeshReferenceTracker.StoreMesh(entry, "generated", null);
-                    }
-                }
+                MeshReferenceTracker.ClearAll(config);
                 return result;
-            }
-            catch
-            {
-                RestoreSnapshots(records);
-                throw;
-            }
+            });
         }
 
         public static bool HasLegacyBulgeGeneration(BulgeConfig config)
@@ -188,45 +168,21 @@ namespace AuroraKai.SPSTools
                 return new MeshStackBuildResult();
 
             config.EnsureStableConfigId();
-            var records = LoadStackRecords(config.avatarRoot);
-            try
+            return EditStacks(config.avatarRoot, records =>
             {
-                if (ContainsLayer(records, config.stableConfigId, "Bulge"))
+                if (ContainsLayer(records, config.stableConfigId, BulgeType))
                     return new MeshStackBuildResult();
 
-                int order = NextLayerOrder(records);
-                bool addedLayer = false;
-                foreach (var participant in GetBulgeParticipants(config))
-                {
-                    var generated = ResolveLegacyGenerated(config, participant);
-                    if (generated == null) continue;
-
-                    var renderer = BaseEffectConfig.ResolveRenderer(
-                        config.avatarRoot, participant.rendererPath);
-                    if (renderer == null) continue;
-
-                    var record = GetOrCreateStackRecord(
-                        records, config.avatarRoot, participant.rendererPath);
-                    EnsureBaseMesh(record.stack, renderer,
-                        ResolveLegacyOriginal(config, participant));
-
-                    record.stack.layers.Add(CreateLegacyFrozenLayer(
-                        config, configAssetPath, participant, order, generated));
-                    addedLayer = true;
-                }
-
+                bool addedLayer = AddLegacyFrozenLayers(
+                    records, config.avatarRoot, config, configAssetPath,
+                    NextLayerOrder(records), requireAssigned: false);
                 if (!addedLayer)
                     return new MeshStackBuildResult();
 
                 var result = RebuildBulgeStacks(config.avatarRoot, records, config);
                 UpdateLegacyReferences(config, records);
                 return result;
-            }
-            catch
-            {
-                RestoreSnapshots(records);
-                throw;
-            }
+            });
         }
 
         public static MeshStackBuildResult RemoveBulgeLayerForRenderer(
@@ -238,24 +194,11 @@ namespace AuroraKai.SPSTools
                 string.IsNullOrEmpty(rendererPath))
                 return new MeshStackBuildResult();
 
-            var records = LoadStackRecords(config.avatarRoot);
-            try
+            return EditStacks(config.avatarRoot, records =>
             {
-                foreach (var record in records)
-                {
-                    if (record.stack.rendererPath != rendererPath)
-                        continue;
-                    record.stack.layers.RemoveAll(l =>
-                        l.effectType == "Bulge" &&
-                        l.stableConfigId == config.stableConfigId);
-                }
+                RemoveConfigLayers(records, config.stableConfigId, BulgeType, rendererPath);
                 return RebuildBulgeStacks(config.avatarRoot, records, config);
-            }
-            catch
-            {
-                RestoreSnapshots(records);
-                throw;
-            }
+            });
         }
 
         public static MeshStackBuildResult RestoreAllBulgeLayers(BulgeConfig config)
@@ -265,29 +208,23 @@ namespace AuroraKai.SPSTools
             if (config.avatarRoot == null)
                 return new MeshStackBuildResult();
 
-            var records = LoadStackRecords(config.avatarRoot);
-            try
+            return EditStacks(config.avatarRoot, records =>
             {
                 var removedStableConfigIds = new HashSet<string>();
                 foreach (var record in records)
                 {
                     foreach (var layer in record.stack.layers)
                     {
-                        if (layer.effectType == "Bulge" &&
+                        if (layer.effectType == BulgeType &&
                             !string.IsNullOrEmpty(layer.stableConfigId))
                             removedStableConfigIds.Add(layer.stableConfigId);
                     }
-                    record.stack.layers.RemoveAll(l => l.effectType == "Bulge");
+                    record.stack.layers.RemoveAll(l => l.effectType == BulgeType);
                 }
                 var result = RebuildBulgeStacks(config.avatarRoot, records, config);
                 ClearLegacyReferencesForConfigs(removedStableConfigIds);
                 return result;
-            }
-            catch
-            {
-                RestoreSnapshots(records);
-                throw;
-            }
+            });
         }
 
         public static bool HasBulgeLayer(BulgeConfig config)
@@ -296,17 +233,10 @@ namespace AuroraKai.SPSTools
                 string.IsNullOrEmpty(config.stableConfigId))
                 return false;
 
-            var records = LoadStackRecords(config.avatarRoot);
-            foreach (var record in records)
-            {
-                foreach (var layer in record.stack.layers)
-                {
-                    if (layer.effectType == "Bulge" &&
-                        layer.stableConfigId == config.stableConfigId)
-                        return true;
-                }
-            }
-            return false;
+            // Read-only, so the stacks aren't snapshotted for rollback.
+            return ContainsLayer(
+                LoadStackRecords(config.avatarRoot, captureSnapshots: false),
+                config.stableConfigId, BulgeType);
         }
 
         public static Mesh ResolveComposedMesh(
@@ -322,13 +252,30 @@ namespace AuroraKai.SPSTools
 
         public static string BuildScopedBulgeNamingPattern(BulgeConfig config)
         {
-            if (config != null &&
-                !string.IsNullOrEmpty(config.blendshapeNamingPattern) &&
-                config.blendshapeNamingPattern.Contains("{0}"))
+            if (config != null && BaseEffectConfig.HasIndexSlot(config.blendshapeNamingPattern))
                 return config.blendshapeNamingPattern;
 
             string id = ShortConfigId(config);
             return $"SPSBulge_{id}_Pos{{0}}";
+        }
+
+        /// <summary>
+        /// Loads the avatar's mesh stacks for <paramref name="edit"/>, putting
+        /// them back as they were if it throws.
+        /// </summary>
+        private static MeshStackBuildResult EditStacks(
+            GameObject avatarRoot, Func<List<StackRecord>, MeshStackBuildResult> edit)
+        {
+            var records = LoadStackRecords(avatarRoot);
+            try
+            {
+                return edit(records);
+            }
+            catch
+            {
+                RestoreSnapshots(records);
+                throw;
+            }
         }
 
         private static MeshStackBuildResult RebuildBulgeStacks(
@@ -362,11 +309,7 @@ namespace AuroraKai.SPSTools
 
                     currentMeshes[stack.rendererPath] = baseMesh;
                     if (renderer != null && baseMesh != null)
-                    {
-                        Undo.RecordObject(renderer, "Rebuild SPS Mesh Stack");
-                        renderer.sharedMesh = baseMesh;
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
-                    }
+                        BlendshapeGenerator.AssignSharedMesh(renderer, baseMesh, "Rebuild SPS Mesh Stack");
                 }
 
                 var groups = BuildLayerGroups(records);
@@ -491,16 +434,13 @@ namespace AuroraKai.SPSTools
                     if (finalMesh != null &&
                         renderers.TryGetValue(stack.rendererPath, out var renderer))
                     {
-                        Undo.RecordObject(renderer, "Assign SPS Mesh Stack");
-                        renderer.sharedMesh = finalMesh;
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+                        BlendshapeGenerator.AssignSharedMesh(renderer, finalMesh, "Assign SPS Mesh Stack");
                         result.rendererCount++;
                     }
                 }
 
                 SaveStackRecords(records);
                 AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
                 return result;
             }
             catch
@@ -546,20 +486,16 @@ namespace AuroraKai.SPSTools
             return result;
         }
 
-        private static Mesh ResolveLegacyOriginal(
-            BulgeConfig config, Participation participant)
+        /// <summary>
+        /// The participant's legacy "original" or "generated" mesh, stored on
+        /// the config for the primary and on its tracked mesh for an overlay.
+        /// </summary>
+        private static Mesh ResolveLegacyMesh(
+            BulgeConfig config, Participation participant, string field)
         {
             if (participant.role == MeshStackLayerRole.Primary)
-                return MeshReferenceTracker.ResolveMesh(config, "original");
-            return MeshReferenceTracker.ResolveMesh(participant.trackedMesh, "original");
-        }
-
-        private static Mesh ResolveLegacyGenerated(
-            BulgeConfig config, Participation participant)
-        {
-            if (participant.role == MeshStackLayerRole.Primary)
-                return MeshReferenceTracker.ResolveMesh(config, "generated");
-            return MeshReferenceTracker.ResolveMesh(participant.trackedMesh, "generated");
+                return MeshReferenceTracker.ResolveMesh(config, field);
+            return MeshReferenceTracker.ResolveMesh(participant.trackedMesh, field);
         }
 
         private static void RegisterAssignedLegacyBulgeGenerations(
@@ -576,37 +512,48 @@ namespace AuroraKai.SPSTools
 
                 legacyConfig.EnsureStableConfigId();
                 if (legacyConfig.stableConfigId == excludeStableConfigId ||
-                    ContainsLayer(records, legacyConfig.stableConfigId, "Bulge"))
+                    ContainsLayer(records, legacyConfig.stableConfigId, BulgeType))
                     continue;
 
-                bool addedAny = false;
-                int order = NextLayerOrder(records);
-                string configPath = AssetDatabase.GetAssetPath(legacyConfig);
-
-                foreach (var participant in GetBulgeParticipants(legacyConfig))
-                {
-                    var generated = ResolveLegacyGenerated(legacyConfig, participant);
-                    if (generated == null) continue;
-
-                    var renderer = BaseEffectConfig.ResolveRenderer(
-                        avatarRoot, participant.rendererPath);
-                    if (renderer == null || renderer.sharedMesh != generated)
-                        continue;
-
-                    var record = GetOrCreateStackRecord(
-                        records, avatarRoot, participant.rendererPath);
-                    EnsureBaseMesh(record.stack, renderer,
-                        ResolveLegacyOriginal(legacyConfig, participant));
-
-                    var layer = CreateLegacyFrozenLayer(
-                        legacyConfig, configPath, participant, order, generated);
-                    record.stack.layers.Add(layer);
-                    addedAny = true;
-                }
-
+                bool addedAny = AddLegacyFrozenLayers(
+                    records, avatarRoot, legacyConfig,
+                    AssetDatabase.GetAssetPath(legacyConfig),
+                    NextLayerOrder(records), requireAssigned: true);
                 if (addedAny)
                     EditorUtility.SetDirty(legacyConfig);
             }
+        }
+
+        /// <summary>
+        /// Adds a frozen layer for each of the config's renderers that has a
+        /// legacy generated mesh. With <paramref name="requireAssigned"/>, only
+        /// renderers still showing that mesh are taken. Returns whether any was added.
+        /// </summary>
+        private static bool AddLegacyFrozenLayers(
+            List<StackRecord> records, GameObject avatarRoot, BulgeConfig config,
+            string configPath, int order, bool requireAssigned)
+        {
+            bool addedAny = false;
+            foreach (var participant in GetBulgeParticipants(config))
+            {
+                var generated = ResolveLegacyMesh(config, participant, "generated");
+                if (generated == null) continue;
+
+                var renderer = BaseEffectConfig.ResolveRenderer(
+                    avatarRoot, participant.rendererPath);
+                if (renderer == null || (requireAssigned && renderer.sharedMesh != generated))
+                    continue;
+
+                var record = GetOrCreateStackRecord(
+                    records, avatarRoot, participant.rendererPath);
+                EnsureBaseMesh(record.stack, renderer,
+                    ResolveLegacyMesh(config, participant, "original"));
+
+                record.stack.layers.Add(CreateLegacyFrozenLayer(
+                    config, configPath, participant, order, generated));
+                addedAny = true;
+            }
+            return addedAny;
         }
 
         private static MeshStackLayer CreateLegacyFrozenLayer(
@@ -679,16 +626,7 @@ namespace AuroraKai.SPSTools
                     !stableConfigIds.Contains(config.stableConfigId))
                     continue;
 
-                MeshReferenceTracker.StoreMesh(config, "original", null);
-                MeshReferenceTracker.StoreMesh(config, "generated", null);
-                if (config.additionalMeshes != null)
-                {
-                    foreach (var entry in config.additionalMeshes)
-                    {
-                        MeshReferenceTracker.StoreMesh(entry, "original", null);
-                        MeshReferenceTracker.StoreMesh(entry, "generated", null);
-                    }
-                }
+                MeshReferenceTracker.ClearAll(config);
                 EditorUtility.SetDirty(config);
                 changed = true;
             }
@@ -796,7 +734,7 @@ namespace AuroraKai.SPSTools
             {
                 foreach (var layer in record.stack.layers)
                 {
-                    if (!layer.isEnabled || layer.effectType != "Bulge")
+                    if (!layer.isEnabled || layer.effectType != BulgeType)
                         continue;
 
                     var group = FindGroup(groups, layer.stableConfigId);
@@ -839,10 +777,13 @@ namespace AuroraKai.SPSTools
         }
 
         private static void RemoveConfigLayers(
-            List<StackRecord> records, string stableConfigId, string effectType)
+            List<StackRecord> records, string stableConfigId, string effectType,
+            string rendererPath = null)
         {
             foreach (var record in records)
             {
+                if (rendererPath != null && record.stack.rendererPath != rendererPath)
+                    continue;
                 record.stack.layers.RemoveAll(l =>
                     l.stableConfigId == stableConfigId &&
                     (string.IsNullOrEmpty(effectType) || l.effectType == effectType));
@@ -890,7 +831,8 @@ namespace AuroraKai.SPSTools
             return max + 1;
         }
 
-        private static List<StackRecord> LoadStackRecords(GameObject avatarRoot)
+        private static List<StackRecord> LoadStackRecords(
+            GameObject avatarRoot, bool captureSnapshots = true)
         {
             var result = new List<StackRecord>();
             string folder = GetStackFolder(avatarRoot);
@@ -908,7 +850,7 @@ namespace AuroraKai.SPSTools
                 {
                     stack = stack,
                     assetPath = path,
-                    snapshot = CaptureSnapshot(stack)
+                    snapshot = captureSnapshots ? CaptureSnapshot(stack) : null
                 });
             }
             return result;
@@ -945,10 +887,7 @@ namespace AuroraKai.SPSTools
             {
                 if (record.isNew)
                 {
-                    string folder = System.IO.Path.GetDirectoryName(record.assetPath)
-                        ?.Replace('\\', '/');
-                    if (!string.IsNullOrEmpty(folder))
-                        SpsAnimationUtility.EnsureFolder(folder);
+                    SpsAnimationUtility.EnsureParentFolder(record.assetPath);
                     AssetDatabase.CreateAsset(record.stack, record.assetPath);
                     record.isNew = false;
                 }
@@ -1019,18 +958,15 @@ namespace AuroraKai.SPSTools
             string baseFolder = config.GetOutputFolder();
             if (string.IsNullOrEmpty(baseFolder))
             {
-                string avatar = BaseEffectConfig.SanitizeFileName(avatarRoot.name);
-                baseFolder = $"Assets/SPSTools/{avatar}/Bulge/{ShortConfigId(config)}";
+                baseFolder = $"{BaseEffectConfig.GetAvatarFolder(avatarRoot)}/" +
+                    $"{BulgeType}/{ShortConfigId(config)}";
             }
             return $"{baseFolder}/{StackFolderName}/{GeneratedFolderName}/" +
                 $"{order:000}_{ShortConfigId(config)}_{sessionId}";
         }
 
-        private static string GetStackFolder(GameObject avatarRoot)
-        {
-            string avatar = BaseEffectConfig.SanitizeFileName(avatarRoot.name);
-            return $"Assets/SPSTools/{avatar}/{StackFolderName}";
-        }
+        private static string GetStackFolder(GameObject avatarRoot) =>
+            $"{BaseEffectConfig.GetAvatarFolder(avatarRoot)}/{StackFolderName}";
 
         private static string GetStackAssetPath(GameObject avatarRoot, string rendererPath)
         {
@@ -1052,7 +988,11 @@ namespace AuroraKai.SPSTools
             return id.Length <= 8 ? id : id.Substring(0, 8);
         }
 
-        private static string StableHash(string value)
+        /// <summary>
+        /// Short hex FNV-1a hash of <paramref name="value"/>, stable across sessions
+        /// and machines, for unique but repeatable asset names.
+        /// </summary>
+        internal static string StableHash(string value)
         {
             unchecked
             {

@@ -14,10 +14,9 @@ namespace AuroraKai.SPSTools
     {
         public static bool IsDrawing { get; private set; }
 
-        // Domain reload sweeps every static reference; without this hook the owned
-        // hidden Material leaks ("Cleaning up leaked objects" in the console) and
-        // any scene-bound state from a session that was active across a reload
-        // would dangle as a stale GameObject/Transform/Mesh ref.
+        // A domain reload resets every static here, subscriptions included, but
+        // the owned hidden Material outlives it and would leak ("Cleaning up
+        // leaked objects" in the console).
         [InitializeOnLoadMethod]
         private static void RegisterReloadCleanup()
         {
@@ -27,52 +26,9 @@ namespace AuroraKai.SPSTools
 
         private static void ReleaseStaticState()
         {
-            // Unsubscribe per-frame hooks so a session that was live across the
-            // reload doesn't leave dangling delegates pointing at the old domain.
-            SceneView.duringSceneGui -= OnSceneGUI;
-            EditorApplication.update -= PumpRepaint;
-            IsDrawing = false;
-
-            // Owned Unity Object - explicit DestroyImmediate to suppress the
-            // editor leak warning.
             if (s_vertexMaterial != null)
                 UnityEngine.Object.DestroyImmediate(s_vertexMaterial);
             s_vertexMaterial = null;
-
-            // Scene/asset references - just drop them.
-            s_targetMesh = null;
-            s_avatarRoot = null;
-            s_snapCachedMesh = null;
-            s_affectedCachedMesh = null;
-
-            // Session state and callbacks.
-            s_waypoints = null;
-            s_onConfirm = null;
-            s_onCancel = null;
-
-            // Cached arrays / KD-tree backed by the above.
-            s_snapVertices = null;
-            s_snapNormals = null;
-            s_snapTree = null;
-            s_splinePoints = null;
-            s_cachedAffectedVerts = null;
-            s_cachedAffectedWeights = null;
-            s_cachedAffectedCount = 0;
-            s_affectedCachedVertices = null;
-
-            // GUIStyles bind to editor textures; force a rebuild after reload.
-            s_panelTitleStyle = null;
-            s_panelLabelStyle = null;
-            s_panelValueStyle = null;
-            s_panelStatsStyle = null;
-            s_hintBarStyle = null;
-            s_waypointNumStyle = null;
-            s_overlayLabelStyle = null;
-            s_stylesInitialized = false;
-
-            s_tempPositions.Clear();
-            s_tempNormals.Clear();
-            s_auxPositions.Clear();
         }
 
         // Drawing state
@@ -168,21 +124,14 @@ namespace AuroraKai.SPSTools
             s_onConfirm = onConfirm;
             s_onCancel = onCancel;
 
-            // Init radius + aspect from existing path or keep current
+            // Init radius + aspect from existing path or keep current. Waypoints
+            // keep their own radius/aspect until the sliders move.
             if (s_waypoints.Count > 0)
             {
                 s_pathRadius = s_waypoints[0].radius;
                 s_pathAspect = s_waypoints[0].aspectRatio;
             }
 
-            // Seed the sync-change detectors to match the initial slider values.
-            // Without this, s_lastSyncedRadius/Aspect carry zero from static-
-            // init (or from a prior session), so the very first OnSceneGUI tick
-            // sees "radius changed" and overwrites every waypoint's per-vertex
-            // radius/aspect with the slider value, silently flattening any
-            // variation the user had authored in the loaded path.
-            s_lastSyncedRadius = s_pathRadius;
-            s_lastSyncedAspect = s_pathAspect;
             s_tempPositions.Clear();
             s_tempNormals.Clear();
             s_waypointWorldCacheDirty = true;
@@ -251,6 +200,24 @@ namespace AuroraKai.SPSTools
             IsDrawing = false;
             SceneView.duringSceneGui -= OnSceneGUI;
             EditorApplication.update -= PumpRepaint;
+
+            // Drop the session: the callbacks capture the editor window, and
+            // the mesh caches are vertex-count sized.
+            s_targetMesh = null;
+            s_avatarRoot = null;
+            s_waypoints = null;
+            s_onConfirm = null;
+            s_onCancel = null;
+            s_snapCachedMesh = null;
+            s_snapVertices = null;
+            s_snapNormals = null;
+            s_snapTree = null;
+            s_affectedCachedMesh = null;
+            s_affectedCachedVertices = null;
+            s_cachedAffectedVerts = null;
+            s_cachedAffectedWeights = null;
+            s_cachedAffectedCount = 0;
+
             SceneView.RepaintAll();
         }
 
@@ -312,14 +279,7 @@ namespace AuroraKai.SPSTools
         private static void Confirm()
         {
             if (s_waypoints.Count < 2) return;
-            SyncRadiusToAll();
             s_onConfirm?.Invoke(new List<PathWaypoint>(s_waypoints));
-            StopDrawing();
-        }
-
-        private static void Cancel()
-        {
-            s_onCancel?.Invoke();
             StopDrawing();
         }
 
@@ -361,22 +321,15 @@ namespace AuroraKai.SPSTools
             s_overlayLabelStyle = new GUIStyle(EditorStyles.miniLabel);
         }
 
-        private static float s_lastSyncedRadius;
-        private static float s_lastSyncedAspect = 1f;
-
-        /// <summary>Sets all waypoint radii and aspect to the current slider values, only when changed.</summary>
-        private static void SyncRadiusToAll()
+        /// <summary>Sets the slider values and gives every waypoint that radius and aspect.</summary>
+        private static void SetPathRadius(float radius, float aspect)
         {
-            bool radiusChanged = !Mathf.Approximately(s_pathRadius, s_lastSyncedRadius);
-            bool aspectChanged = !Mathf.Approximately(s_pathAspect, s_lastSyncedAspect);
-            if (!radiusChanged && !aspectChanged) return;
-
-            s_lastSyncedRadius = s_pathRadius;
-            s_lastSyncedAspect = s_pathAspect;
+            s_pathRadius = radius;
+            s_pathAspect = aspect;
             foreach (var wp in s_waypoints)
             {
-                wp.radius = s_pathRadius;
-                wp.aspectRatio = s_pathAspect;
+                wp.radius = radius;
+                wp.aspectRatio = aspect;
             }
 
             InvalidatePathCaches();
@@ -397,9 +350,6 @@ namespace AuroraKai.SPSTools
             Rect panelRect = GetFloatingPanelRect(sceneW, sceneH);
             Rect hintBarRect = GetBottomHintBarRect(sceneW, sceneH);
             bool blockSceneInput = IsPointerOverOverlay(evt.mousePosition, panelRect, hintBarRect);
-
-            // Sync radius slider → all waypoints only if changed
-            SyncRadiusToAll();
 
             // ── Draw 3D elements first (handles, tube, vertices) ──
             DrawWaypointHandles(evt, !blockSceneInput);
@@ -422,7 +372,7 @@ namespace AuroraKai.SPSTools
                 if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)
                 { Confirm(); evt.Use(); return; }
                 if (evt.keyCode == KeyCode.Escape)
-                { Cancel(); evt.Use(); return; }
+                { CancelDrawing(); evt.Use(); return; }
                 if (!blockSceneInput
                     && evt.keyCode == KeyCode.Z && evt.control
                     && s_waypoints.Count > 0)
@@ -510,26 +460,29 @@ namespace AuroraKai.SPSTools
             y += titleH;
 
             // Path Radius
-            GUI.Label(new Rect(x, y, 68f, 16f), "Path Radius", s_panelLabelStyle);
-            s_pathRadius = GUI.HorizontalSlider(
+            GUI.Label(new Rect(x, y, 68f, 16f), TooltipContent.PathRadius, s_panelLabelStyle);
+            float radius = GUI.HorizontalSlider(
                 new Rect(x + 70f, y + 4f, w - 104f, 12f),
                 s_pathRadius, 0.005f, 0.15f);
             GUI.Label(new Rect(x + w - 32f, y, 32f, 16f),
-                s_pathRadius.ToString("F3"), s_panelValueStyle);
+                radius.ToString("F3"), s_panelValueStyle);
             y += 20f;
 
             // Aspect - stretch along path vs across path
             GUI.Label(new Rect(x, y, 68f, 16f), "Aspect", s_panelLabelStyle);
-            s_pathAspect = GUI.HorizontalSlider(
+            float aspect = GUI.HorizontalSlider(
                 new Rect(x + 70f, y + 4f, w - 104f, 12f),
                 s_pathAspect, 0.3f, 3f);
             GUI.Label(new Rect(x + w - 32f, y, 32f, 16f),
-                s_pathAspect.ToString("F2"), s_panelValueStyle);
+                aspect.ToString("F2"), s_panelValueStyle);
             y += 20f;
+
+            if (radius != s_pathRadius || aspect != s_pathAspect)
+                SetPathRadius(radius, aspect);
 
             // Snap toggle
             s_snapToVerts = GUI.Toggle(new Rect(x, y, w, 18f),
-                s_snapToVerts, "Snap to Vertices", EditorStyles.miniButton);
+                s_snapToVerts, TooltipContent.SnapToVertices, EditorStyles.miniButton);
             y += 22f;
 
             // Stats
@@ -549,7 +502,7 @@ namespace AuroraKai.SPSTools
 
             GUI.enabled = true;
             if (GUI.Button(new Rect(x + halfW + 4f, y, halfW, btnH), "Cancel"))
-            { Cancel(); return; }
+            { CancelDrawing(); return; }
             y += btnH + 3f;
 
             GUI.enabled = s_waypoints.Count > 0;
@@ -690,8 +643,7 @@ namespace AuroraKai.SPSTools
             UpdateWaypointWorldCache();
 
             // Thick smooth centerline. Populates s_splinePoints as a side effect,
-            // which we reuse below for the tip arrow instead of a fresh
-            // ToPolyline allocation.
+            // which we reuse below for the tip arrow.
             DrawSpline(s_waypoints, s_avatarRoot, s_color, 0.8f, 3.5f);
 
             // Direction arrow at end, pulled straight from the last two samples
@@ -708,27 +660,26 @@ namespace AuroraKai.SPSTools
             }
         }
 
+        private const int EllipseSegments = 48;
+        private static readonly Vector3[] s_ellipsePoints = new Vector3[EllipseSegments + 1];
+
         /// <summary>
         /// Draws the radius ellipse at a waypoint. Axes align with the path
         /// tangent and its cross product with the surface normal so the ellipse
-        /// is flat on the surface and stretched along the path.
+        /// is flat on the surface and stretched along the path. Pass the
+        /// waypoints' cached world positions and normals when there are some.
         /// </summary>
         private static void DrawWaypointEllipse(
-            List<PathWaypoint> waypoints, int index, Transform avatarRoot)
-        {
-            DrawWaypointEllipse(waypoints, index, avatarRoot, null, null);
-        }
-
-        private static void DrawWaypointEllipse(
             List<PathWaypoint> waypoints, int index, Transform avatarRoot,
-            List<Vector3> worldPositions, List<Vector3> worldNormals)
+            List<Vector3> worldPositions = null, List<Vector3> worldNormals = null)
         {
             var wp = waypoints[index];
             bool hasCachedPositions = worldPositions != null && worldPositions.Count == waypoints.Count;
             bool hasCachedNormals = worldNormals != null && worldNormals.Count == waypoints.Count;
-            Vector3 worldPos = hasCachedPositions
-                ? worldPositions[index]
-                : avatarRoot.TransformPoint(wp.localPosition);
+            Vector3 WorldPos(int i) => hasCachedPositions
+                ? worldPositions[i]
+                : avatarRoot.TransformPoint(waypoints[i].localPosition);
+            Vector3 worldPos = WorldPos(index);
             Vector3 worldNormal = hasCachedNormals
                 ? worldNormals[index]
                 : avatarRoot.TransformDirection(wp.localNormal).normalized;
@@ -742,28 +693,10 @@ namespace AuroraKai.SPSTools
                     tangent = Vector3.Cross(worldNormal, Vector3.forward);
                 tangent = tangent.normalized;
             }
-            else if (index == 0)
-            {
-                Vector3 next = hasCachedPositions
-                    ? worldPositions[1]
-                    : avatarRoot.TransformPoint(waypoints[1].localPosition);
-                tangent = (next - worldPos).normalized;
-            }
-            else if (index == waypoints.Count - 1)
-            {
-                Vector3 prev = hasCachedPositions
-                    ? worldPositions[index - 1]
-                    : avatarRoot.TransformPoint(waypoints[index - 1].localPosition);
-                tangent = (worldPos - prev).normalized;
-            }
             else
             {
-                Vector3 prev = hasCachedPositions
-                    ? worldPositions[index - 1]
-                    : avatarRoot.TransformPoint(waypoints[index - 1].localPosition);
-                Vector3 next = hasCachedPositions
-                    ? worldPositions[index + 1]
-                    : avatarRoot.TransformPoint(waypoints[index + 1].localPosition);
+                Vector3 next = WorldPos(Mathf.Min(index + 1, waypoints.Count - 1));
+                Vector3 prev = WorldPos(Mathf.Max(index - 1, 0));
                 tangent = (next - prev).normalized;
             }
 
@@ -776,17 +709,16 @@ namespace AuroraKai.SPSTools
             float alongRadius = wp.radius * aspect;
             float acrossRadius = wp.radius / aspect;
 
-            const int segments = 48;
-            Vector3 prevPt = worldPos + alongAxis * alongRadius;
-            for (int i = 1; i <= segments; i++)
+            // One polyline per ellipse: a DrawLine per segment was a separate
+            // draw submission each, 48 per waypoint every scene repaint.
+            for (int i = 0; i <= EllipseSegments; i++)
             {
-                float angle = i * (2f * Mathf.PI / segments);
-                Vector3 pt = worldPos
+                float angle = i * (2f * Mathf.PI / EllipseSegments);
+                s_ellipsePoints[i] = worldPos
                     + alongAxis * (alongRadius * Mathf.Cos(angle))
                     + acrossAxis * (acrossRadius * Mathf.Sin(angle));
-                Handles.DrawLine(prevPt, pt);
-                prevPt = pt;
             }
+            Handles.DrawPolyLine(s_ellipsePoints);
         }
 
         /// <summary>
@@ -947,8 +879,7 @@ namespace AuroraKai.SPSTools
                 float dist = tube.DistanceToTube(localVert, out float radiusAtClosest);
                 if (dist < radiusAtClosest)
                 {
-                    float w = 1f - (dist / radiusAtClosest);
-                    w = w * w * (3f - 2f * w); // smoothstep
+                    float w = BlendshapeGenerator.SmoothStep(1f - (dist / radiusAtClosest));
                     if (w > 0.001f)
                     {
                         Vector3 worldVert = meshToWorld.MultiplyPoint3x4(vertices[v]);
@@ -972,13 +903,7 @@ namespace AuroraKai.SPSTools
         {
             if (s_targetMesh == null) return;
 
-            var smr = s_targetMesh.GetComponent<SkinnedMeshRenderer>();
-            Mesh mesh = smr != null ? smr.sharedMesh : null;
-            if (mesh == null)
-            {
-                var mf = s_targetMesh.GetComponent<MeshFilter>();
-                mesh = mf != null ? mf.sharedMesh : null;
-            }
+            var mesh = GetTargetMesh(out var smr);
             if (mesh == null) return;
 
             // Cache vertex/normal arrays and a KDTree over object-space positions.
@@ -1023,6 +948,18 @@ namespace AuroraKai.SPSTools
             }
         }
 
+        /// <summary>
+        /// The mesh being drawn on: the SkinnedMeshRenderer's, or else a MeshFilter's.
+        /// </summary>
+        private static Mesh GetTargetMesh(out SkinnedMeshRenderer skinnedRenderer)
+        {
+            skinnedRenderer = s_targetMesh.GetComponent<SkinnedMeshRenderer>();
+            if (skinnedRenderer != null && skinnedRenderer.sharedMesh != null)
+                return skinnedRenderer.sharedMesh;
+            var meshFilter = s_targetMesh.GetComponent<MeshFilter>();
+            return meshFilter != null ? meshFilter.sharedMesh : null;
+        }
+
         private static bool RaycastToMesh(Ray ray, out Vector3 hitPos, out Vector3 hitNormal)
         {
             hitPos = Vector3.zero;
@@ -1030,15 +967,7 @@ namespace AuroraKai.SPSTools
 
             if (s_targetMesh == null) return false;
 
-            var skinnedRenderer = s_targetMesh.GetComponent<SkinnedMeshRenderer>();
-            var meshFilter = s_targetMesh.GetComponent<MeshFilter>();
-
-            Mesh mesh = null;
-            if (skinnedRenderer != null)
-                mesh = skinnedRenderer.sharedMesh;
-            else if (meshFilter != null)
-                mesh = meshFilter.sharedMesh;
-
+            var mesh = GetTargetMesh(out _);
             if (mesh == null) return false;
 
             if (s_intersectRayMeshMethod == null)

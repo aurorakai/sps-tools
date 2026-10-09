@@ -47,8 +47,7 @@ namespace AuroraKai.SPSTools
             if (verts.Length == 0 || tris.Length == 0) return 0f;
 
             var at = avatarRoot != null ? avatarRoot : renderer.transform;
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
+            var tube = CatmullRomSpline.BuildTube(path);
             var worldVerts = GetSkinnedWorldRefVerts(renderer, verts);
             var inRegion = ComputeVerticesInTube(mesh, verts, worldVerts, at, tube);
 
@@ -91,9 +90,8 @@ namespace AuroraKai.SPSTools
             CatmullRomSpline.SplineTube tube)
         {
             int vertCount = vertices != null ? vertices.Length : 0;
-            var inTube = new bool[vertCount];
             if (vertCount == 0 || tube.count == 0)
-                return inTube;
+                return new bool[vertCount];
             if (worldRefVerts == null || worldRefVerts.Length != vertCount)
             {
                 // Silent length mismatches produced "0 verts affected" in the UI
@@ -105,36 +103,15 @@ namespace AuroraKai.SPSTools
                     $"(mesh={vertCount}, world={(worldRefVerts == null ? 0 : worldRefVerts.Length)}). " +
                     "Check that Read/Write is enabled on the mesh and that the renderer " +
                     "hasn't swapped its sharedMesh since detection ran.");
-                return inTube;
+                return new bool[vertCount];
             }
 
-            var adjacency = BuildAdjacency(mesh);
-            var euclideanDist = new float[vertCount];
-            var tubeRadius = new float[vertCount];
-            var tubeAspect = new float[vertCount];
-            float maxRadius = 0f;
-
-            for (int v = 0; v < vertCount; v++)
-            {
-                Vector3 localVert = avatarRoot != null
-                    ? avatarRoot.InverseTransformPoint(worldRefVerts[v])
-                    : worldRefVerts[v];
-
-                euclideanDist[v] = tube.DistanceToTube(localVert,
-                    out tubeRadius[v], out float aspect, out _);
-                tubeAspect[v] = Mathf.Max(0.1f, aspect);
-                if (tubeRadius[v] > maxRadius) maxRadius = tubeRadius[v];
-            }
-
-            if (maxRadius <= 0f) return inTube;
-
-            var surfaceDistance = ComputeSurfaceDistances(
-                vertices, adjacency, euclideanDist, maxRadius);
-
-            for (int v = 0; v < vertCount; v++)
-                inTube[v] = surfaceDistance[v] < (tubeRadius[v] / tubeAspect[v]);
-
-            return inTube;
+            var projection = new TubeProjection(worldRefVerts, avatarRoot, tube);
+            // Adjacency is the expensive part, and most renderers an overlay
+            // scan checks are nowhere near the path.
+            if (projection.ReachesMesh)
+                projection.ComputeInTube(vertices, BuildAdjacency(vertices, mesh.triangles));
+            return projection.inTube;
         }
 
         /// <summary>
@@ -228,88 +205,28 @@ namespace AuroraKai.SPSTools
             try
             {
                 if (subdivide && subdivisionPasses > 0)
-                {
-                    var preSubdivWorldRefs = GetSkinnedWorldRefVerts(renderer, mesh.vertices);
-                    var preSubdivisionMesh = mesh;
-                    mesh = MeshSubdivider.SubdivideInRegion(
-                        preSubdivisionMesh, path, renderer.transform, avatarRoot,
-                        worldRefVerts: preSubdivWorldRefs,
-                        passes: subdivisionPasses);
-                    if (preSubdivisionMesh != null && preSubdivisionMesh != mesh)
-                        Object.DestroyImmediate(preSubdivisionMesh);
-                    // BakeMesh on the renderer needs to see the subdivided mesh so its
-                    // baked vertex count matches what we project against. Without this,
-                    // GetSkinnedWorldRefVerts silently falls into the bind-pose fallback,
-                    // which is wrong for any non-bind-pose avatar or bone-parented overlay.
-                    Undo.RecordObject(renderer, "Assign subdivided mesh");
-                    renderer.sharedMesh = mesh;
-                    PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
-                }
+                    mesh = SubdivideOnRenderer(renderer, mesh, path, avatarRoot, subdivisionPasses);
 
                 EditorUtility.DisplayProgressBar("Generating Bulge Blendshapes", "Computing surface distances...", 0.1f);
 
+                // Each Mesh array getter returns a copy, so read them once.
                 var vertices = mesh.vertices;
-                var smoothNormals = ComputeSmoothedNormals(mesh);
+                var triangles = mesh.triangles;
+                var meshNormals = mesh.normals;
+                var smoothNormals = ComputeSmoothedNormals(vertices, triangles, meshNormals);
+                var adjacency = BuildAdjacency(vertices, triangles);
 
-                // Pre-sample the tube once for all positions
-                int segments = Mathf.Max(path.Count * 8, 20);
-                var tube = CatmullRomSpline.BuildTube(path, segments);
+                // Project each vertex onto the tube once for all positions. Baked
+                // positions put overlay meshes parented to bones (not the avatar
+                // root) at the correct world location.
+                var projection = new TubeProjection(
+                    GetSkinnedWorldRefVerts(renderer, vertices), avatarRoot,
+                    CatmullRomSpline.BuildTube(path));
+                projection.ComputeInTube(vertices, adjacency);
 
                 var names = new List<string>();
                 float mag = displacement;
-
-                var adjacency = BuildAdjacency(mesh);
-
-                // Position t-values along the path (0 to 1)
-                var positionTs = new float[positionCount];
-                for (int pos = 0; pos < positionCount; pos++)
-                {
-                    positionTs[pos] = positionCount > 1
-                        ? (float)pos / (positionCount - 1)
-                        : 0.5f;
-                }
-
-                // Bell curve sigma: spacing between positions * overlap factor
-                // With 1.0 spacing, sigma gives ~95% coverage across the gap
-                float spacing = positionCount > 1 ? 1f / (positionCount - 1) : 1f;
-                float sigma = spacing * 0.6f; // overlap: each bell extends well into neighbors
-
-                // Pre-compute vertex data: project each vertex onto the spline once
-                int vertCount = vertices.Length;
-                var vertPathT = new float[vertCount];
-                var vertEuclidDist = new float[vertCount];
-                var vertTubeRadius = new float[vertCount];
-                var vertTubeAspect = new float[vertCount];
-
-                // Use baked positions for path projection so overlay meshes parented
-                // to bones (not the avatar root) project to the correct world location.
-                Vector3[] worldRefVerts = GetSkinnedWorldRefVerts(renderer, vertices);
-
-                float maxRadius = 0f;
-                for (int v = 0; v < vertCount; v++)
-                {
-                    Vector3 localVert = avatarRoot.InverseTransformPoint(worldRefVerts[v]);
-
-                    float dist = tube.DistanceToTube(localVert,
-                        out float radius, out float aspect, out float pathT);
-
-                    vertPathT[v] = pathT;
-                    vertEuclidDist[v] = dist;
-                    vertTubeRadius[v] = radius;
-                    vertTubeAspect[v] = Mathf.Max(0.1f, aspect);
-                    if (radius > maxRadius) maxRadius = radius;
-                }
-
-                // Compute surface distances from centerline (follows mesh contour)
-                var vertSurfDist = ComputeSurfaceDistances(
-                    vertices, adjacency, vertEuclidDist, maxRadius);
-
-                // Determine which vertices are inside the tube using surface distance.
-                // Use the aspect-expanded radius so vertices within the elliptical
-                // across-path extent aren't falsely excluded.
-                var vertInTube = new bool[vertCount];
-                for (int v = 0; v < vertCount; v++)
-                    vertInTube[v] = vertSurfDist[v] < (vertTubeRadius[v] / vertTubeAspect[v]);
+                float sigma = PositionSigma(positionCount);
 
                 EditorUtility.DisplayProgressBar("Generating Bulge Blendshapes", "Computing vertex projections...", 0.3f);
 
@@ -319,34 +236,9 @@ namespace AuroraKai.SPSTools
                 {
                     EditorUtility.DisplayProgressBar("Generating Bulge Blendshapes", $"Position {pos+1}/{positionCount}...", 0.3f + 0.5f * pos / positionCount);
 
-                    float centerT = positionTs[pos];
-                    var deltas = new Vector3[vertCount];
-                    bool hasAnyWeight = false;
-
-                    for (int v = 0; v < vertCount; v++)
-                    {
-                        if (!vertInTube[v]) continue;
-
-                        // Aspect stretches the ellipse: >1 elongates along path,
-                        // <1 spreads across path. Preserves area (roughly).
-                        float aspect = vertTubeAspect[v];
-                        float effectiveSigma = sigma * aspect;
-                        float effectiveRadius = vertTubeRadius[v] / aspect;
-
-                        float dt = vertPathT[v] - centerT;
-                        float alongWeight = Mathf.Exp(-(dt * dt) / (2f * effectiveSigma * effectiveSigma));
-
-                        float perpW = 1f - (vertSurfDist[v] / effectiveRadius);
-                        perpW = SmoothStep(Mathf.Clamp01(perpW));
-
-                        float w = alongWeight * perpW;
-
-                        if (w > 0.001f)
-                        {
-                            deltas[v] = smoothNormals[v] * w * mag;
-                            hasAnyWeight = true;
-                        }
-                    }
+                    var deltas = projection.PositionDeltas(
+                        smoothNormals, PositionT(pos, positionCount), sigma, mag,
+                        out bool hasAnyWeight);
 
                     if (hasAnyWeight)
                     {
@@ -380,9 +272,6 @@ namespace AuroraKai.SPSTools
                     : 1f;
 
                 // Phase 3: Apply uniform scale and add blendshape frames
-                var meshNormals = mesh.normals;
-                var meshTriangles = mesh.triangles;
-
                 for (int pos = 0; pos < allDeltas.Count; pos++)
                 {
                     var deltas = allDeltas[pos];
@@ -394,14 +283,11 @@ namespace AuroraKai.SPSTools
                             deltas[v] *= globalScale;
                     }
 
-                    int idx = names.Count + 1;
-                    bool hasPattern = !string.IsNullOrEmpty(namingPattern) && namingPattern.Contains("{0}");
-                    string name = hasPattern
-                        ? string.Format(namingPattern, idx)
-                        : $"SPSBulge_Pos{idx}";
+                    string name = BaseEffectConfig.FormatBlendshapeName(
+                        namingPattern, names.Count + 1, BulgeGenerator.PositionPrefix);
 
                     Vector3[] normalDeltas = recalculateNormals
-                        ? ComputeNormalDeltas(vertices, deltas, meshTriangles, meshNormals, adjacency, name,
+                        ? ComputeNormalDeltas(vertices, deltas, triangles, meshNormals, adjacency, name,
                             normalFalloffSoftness, normalSmoothingPasses, normalBoundaryRings)
                         : null;
                     mesh.AddBlendShapeFrame(name, 100f, deltas, normalDeltas, null);
@@ -412,10 +298,7 @@ namespace AuroraKai.SPSTools
 
                 string meshPath = $"{outputFolder}/SPSBulge_GeneratedMesh{meshAssetSuffix}.asset";
                 SaveMesh(mesh, meshPath);
-
-                Undo.RecordObject(renderer, "Assign generated mesh");
-                renderer.sharedMesh = mesh;
-                PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+                AssignSharedMesh(renderer, mesh, "Assign generated mesh");
 
                 return new BlendshapeResult
                 {
@@ -465,72 +348,24 @@ namespace AuroraKai.SPSTools
             int vertCount = vertices.Length;
             if (vertCount == 0) return new Vector3[0];
 
-            var smoothNormals = ComputeSmoothedNormals(mesh);
-            var adjacency = BuildAdjacency(mesh);
+            var triangles = mesh.triangles;
+            var smoothNormals = ComputeSmoothedNormals(vertices, triangles, mesh.normals);
+            var adjacency = BuildAdjacency(vertices, triangles);
 
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
-
-            // Project each vert onto the tube centerline.
-            var vertPathT = new float[vertCount];
-            var vertEuclidDist = new float[vertCount];
-            var vertTubeRadius = new float[vertCount];
-            var vertTubeAspect = new float[vertCount];
-            float maxRadius = 0f;
-
+            var worldVerts = new Vector3[vertCount];
             for (int v = 0; v < vertCount; v++)
             {
-                Vector3 worldVert = rendererTransform != null
+                worldVerts[v] = rendererTransform != null
                     ? rendererTransform.TransformPoint(vertices[v])
                     : vertices[v];
-                Vector3 localVert = avatarRoot != null
-                    ? avatarRoot.InverseTransformPoint(worldVert)
-                    : worldVert;
-
-                float dist = tube.DistanceToTube(localVert,
-                    out float radius, out float aspect, out float pathT);
-
-                vertPathT[v] = pathT;
-                vertEuclidDist[v] = dist;
-                vertTubeRadius[v] = radius;
-                vertTubeAspect[v] = Mathf.Max(0.1f, aspect);
-                if (radius > maxRadius) maxRadius = radius;
             }
+            var projection = new TubeProjection(
+                worldVerts, avatarRoot, CatmullRomSpline.BuildTube(path));
+            projection.ComputeInTube(vertices, adjacency);
 
-            var vertSurfDist = ComputeSurfaceDistances(
-                vertices, adjacency, vertEuclidDist, maxRadius);
-
-            var vertInTube = new bool[vertCount];
-            for (int v = 0; v < vertCount; v++)
-                vertInTube[v] = vertSurfDist[v] < (vertTubeRadius[v] / vertTubeAspect[v]);
-
-            // Target position's t-value + gaussian sigma along the path.
-            float centerT = positionCount > 1
-                ? (float)targetPosition / (positionCount - 1)
-                : 0.5f;
-            float spacing = positionCount > 1 ? 1f / (positionCount - 1) : 1f;
-            float sigma = spacing * 0.6f;
-
-            // Compute per-vertex weighted delta for this one position.
-            var deltas = new Vector3[vertCount];
-            for (int v = 0; v < vertCount; v++)
-            {
-                if (!vertInTube[v]) continue;
-
-                float aspect = vertTubeAspect[v];
-                float effectiveSigma = sigma * aspect;
-                float effectiveRadius = vertTubeRadius[v] / aspect;
-
-                float dt = vertPathT[v] - centerT;
-                float alongWeight = Mathf.Exp(-(dt * dt) / (2f * effectiveSigma * effectiveSigma));
-
-                float perpW = 1f - (vertSurfDist[v] / effectiveRadius);
-                perpW = SmoothStep(Mathf.Clamp01(perpW));
-
-                float w = alongWeight * perpW;
-                if (w > 0.001f)
-                    deltas[v] = smoothNormals[v] * w * displacement;
-            }
+            var deltas = projection.PositionDeltas(
+                smoothNormals, PositionT(targetPosition, positionCount),
+                PositionSigma(positionCount), displacement, out _);
 
             SmoothDeltas(deltas, adjacency, smoothingPasses);
 
@@ -554,6 +389,121 @@ namespace AuroraKai.SPSTools
             return deltas;
         }
 
+        /// <summary>
+        /// Where position <paramref name="pos"/> of <paramref name="count"/> is
+        /// centred along the path, from 0 (start) to 1 (end).
+        /// </summary>
+        internal static float PositionT(int pos, int count) =>
+            count > 1 ? (float)pos / (count - 1) : 0.5f;
+
+        /// <summary>
+        /// Bell curve sigma along the path: the spacing between positions times
+        /// an overlap factor, so each bell extends well into its neighbours.
+        /// </summary>
+        internal static float PositionSigma(int count) =>
+            (count > 1 ? 1f / (count - 1) : 1f) * 0.6f;
+
+        /// <summary>
+        /// Each vertex projected onto the path's spline tube, and which vertices
+        /// the tube deforms. Generation, the Normal Map Baker, the overlay scan
+        /// and the region preview all go through this so they agree on what moves.
+        /// </summary>
+        internal sealed class TubeProjection
+        {
+            public readonly float[] pathT;
+            public readonly float[] radius;
+            public readonly float[] aspect;     // clamped to at least 0.1
+            public readonly bool[] inTube;      // all false until ComputeInTube
+            public float[] surfaceDistance;     // set by ComputeInTube
+
+            private readonly float[] euclideanDistance;
+            private readonly float maxRadius;
+            private readonly float minDistance = float.MaxValue;
+
+            public TubeProjection(
+                Vector3[] worldVerts, Transform avatarRoot, CatmullRomSpline.SplineTube tube)
+            {
+                int vertCount = worldVerts.Length;
+                pathT = new float[vertCount];
+                radius = new float[vertCount];
+                aspect = new float[vertCount];
+                inTube = new bool[vertCount];
+                euclideanDistance = new float[vertCount];
+
+                for (int v = 0; v < vertCount; v++)
+                {
+                    Vector3 localVert = avatarRoot != null
+                        ? avatarRoot.InverseTransformPoint(worldVerts[v])
+                        : worldVerts[v];
+
+                    float dist = tube.DistanceToTube(localVert,
+                        out radius[v], out float vertAspect, out pathT[v]);
+                    euclideanDistance[v] = dist;
+                    aspect[v] = Mathf.Max(0.1f, vertAspect);
+                    if (radius[v] > maxRadius) maxRadius = radius[v];
+                    if (dist < minDistance) minDistance = dist;
+                }
+            }
+
+            /// <summary>
+            /// False when no vertex comes within the tube's widest radius.
+            /// Nothing can be in the tube then.
+            /// </summary>
+            public bool ReachesMesh => maxRadius > 0f && minDistance <= maxRadius;
+
+            /// <summary>
+            /// Fills <see cref="surfaceDistance"/> (distance from the centreline
+            /// along the mesh surface) and <see cref="inTube"/>. The test uses the
+            /// aspect-narrowed radius so vertices within the elliptical across-path
+            /// extent aren't falsely excluded.
+            /// </summary>
+            public void ComputeInTube(Vector3[] vertices, List<int>[] adjacency)
+            {
+                if (!ReachesMesh) return;
+                surfaceDistance = ComputeSurfaceDistances(
+                    vertices, adjacency, euclideanDistance, maxRadius);
+                for (int v = 0; v < inTube.Length; v++)
+                    inTube[v] = surfaceDistance[v] < (radius[v] / aspect[v]);
+            }
+
+            /// <summary>
+            /// Displacement of the in-tube vertices for the position centred at
+            /// <paramref name="centerT"/>: a gaussian along the path times a
+            /// smoothstep falloff across it, along <paramref name="normals"/>.
+            /// </summary>
+            public Vector3[] PositionDeltas(
+                Vector3[] normals, float centerT, float sigma, float magnitude,
+                out bool anyWeight)
+            {
+                var deltas = new Vector3[inTube.Length];
+                anyWeight = false;
+                for (int v = 0; v < inTube.Length; v++)
+                {
+                    if (!inTube[v]) continue;
+
+                    // Aspect stretches the ellipse: >1 elongates along path,
+                    // <1 spreads across path. Preserves area (roughly).
+                    float vertAspect = aspect[v];
+                    float effectiveSigma = sigma * vertAspect;
+                    float effectiveRadius = radius[v] / vertAspect;
+
+                    float dt = pathT[v] - centerT;
+                    float alongWeight = Mathf.Exp(-(dt * dt) / (2f * effectiveSigma * effectiveSigma));
+
+                    float perpW = 1f - (surfaceDistance[v] / effectiveRadius);
+                    perpW = SmoothStep(Mathf.Clamp01(perpW));
+
+                    float w = alongWeight * perpW;
+                    if (w > 0.001f)
+                    {
+                        deltas[v] = normals[v] * w * magnitude;
+                        anyWeight = true;
+                    }
+                }
+                return deltas;
+            }
+        }
+
         // --- Internal helpers ---
 
         private static Mesh CopyMesh(SkinnedMeshRenderer renderer)
@@ -570,25 +520,52 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Subdivides the path region of <paramref name="mesh"/> (a copy of the
+        /// renderer's mesh, which is destroyed) and puts the result on the renderer.
+        /// </summary>
+        private static Mesh SubdivideOnRenderer(
+            SkinnedMeshRenderer renderer, Mesh mesh,
+            List<PathWaypoint> path, Transform avatarRoot, int passes)
+        {
+            var subdivided = MeshSubdivider.SubdivideInRegion(
+                mesh, path, renderer.transform, avatarRoot,
+                worldRefVerts: GetSkinnedWorldRefVerts(renderer, mesh.vertices),
+                passes: passes);
+            if (subdivided != mesh)
+                Object.DestroyImmediate(mesh);
+            // BakeMesh on the renderer needs to see the subdivided mesh so its
+            // baked vertex count matches what we project against. Without this,
+            // GetSkinnedWorldRefVerts silently falls into the bind-pose fallback,
+            // which is wrong for any non-bind-pose avatar or bone-parented overlay.
+            AssignSharedMesh(renderer, subdivided, "Assign subdivided mesh");
+            return subdivided;
+        }
+
+        /// <summary>
+        /// Puts <paramref name="mesh"/> on the renderer as an undoable change,
+        /// recorded as a prefab override.
+        /// </summary>
+        internal static void AssignSharedMesh(
+            SkinnedMeshRenderer renderer, Mesh mesh, string undoName)
+        {
+            Undo.RecordObject(renderer, undoName);
+            renderer.sharedMesh = mesh;
+            PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+        }
+
+        /// <summary>
         /// Hermite smoothstep: 3t² - 2t³. Much gentler than quadratic w*w.
         /// </summary>
-        private static float SmoothStep(float t)
+        internal static float SmoothStep(float t)
         {
             t = Mathf.Clamp01(t);
             return t * t * (3f - 2f * t);
         }
 
         /// <summary>
-        /// Computes area-weighted smoothed normals per vertex.
-        /// On low-poly meshes, raw normals are faceted and cause spikey displacement.
-        /// This averages normals across all faces sharing each vertex position,
-        /// weighted by triangle area, producing smooth outward directions.
-        /// </summary>
-        private static Vector3[] ComputeSmoothedNormals(Mesh mesh)
-            => ComputeSmoothedNormals(mesh.vertices, mesh.triangles, mesh.normals);
-
-        /// <summary>
-        /// Area-weighted smoothed normals from raw arrays.
+        /// Area-weighted smoothed normals from raw arrays: averages normals across
+        /// all faces sharing each vertex position, weighted by triangle area. On
+        /// low-poly meshes, raw normals are faceted and cause spikey displacement.
         /// Used for both original and deformed vertex sets.
         /// </summary>
         private static Vector3[] ComputeSmoothedNormals(
@@ -619,29 +596,13 @@ namespace AuroraKai.SPSTools
 
             // Also merge normals for vertices that share the same position
             // (common on low-poly meshes with hard edges / split UVs)
-            var positionBuckets = new Dictionary<long, List<int>>();
-            for (int v = 0; v < vertCount; v++)
+            foreach (var group in ColocatedVertexGroups(vertices))
             {
-                // Quantize position to merge nearby vertices
-                long key = QuantizePosition(vertices[v]);
-                if (!positionBuckets.TryGetValue(key, out var bucket))
-                {
-                    bucket = new List<int>();
-                    positionBuckets[key] = bucket;
-                }
-                bucket.Add(v);
-            }
-
-            // Average normals for co-located vertices
-            foreach (var bucket in positionBuckets.Values)
-            {
-                if (bucket.Count <= 1) continue;
-
                 Vector3 merged = Vector3.zero;
-                foreach (int v in bucket)
+                foreach (int v in group)
                     merged += accumulated[v];
 
-                foreach (int v in bucket)
+                foreach (int v in group)
                     accumulated[v] = merged;
             }
 
@@ -780,25 +741,12 @@ namespace AuroraKai.SPSTools
 
             // Merge co-located affected vertices (so UV seams / hard edges stay consistent).
             // Apply the SAME merge to the baseline accumulations so the subtract is symmetric.
-            var buckets = new Dictionary<long, List<int>>();
-            for (int v = 0; v < vertCount; v++)
+            foreach (var group in ColocatedVertexGroups(originalVertices, affected))
             {
-                if (!affected[v]) continue;
-                long key = QuantizePosition(originalVertices[v]);
-                if (!buckets.TryGetValue(key, out var bucket))
-                {
-                    bucket = new List<int>();
-                    buckets[key] = bucket;
-                }
-                bucket.Add(v);
-            }
-            foreach (var bucket in buckets.Values)
-            {
-                if (bucket.Count <= 1) continue;
                 Vector3 merged = Vector3.zero;
                 Vector3 mergedBase = Vector3.zero;
-                foreach (int v in bucket) { merged += accumulated[v]; mergedBase += accumulatedBase[v]; }
-                foreach (int v in bucket) { accumulated[v] = merged; accumulatedBase[v] = mergedBase; }
+                foreach (int v in group) { merged += accumulated[v]; mergedBase += accumulatedBase[v]; }
+                foreach (int v in group) { accumulated[v] = merged; accumulatedBase[v] = mergedBase; }
             }
 
             // Compute final delta with soft falloff based on 1-ring max movement
@@ -847,8 +795,7 @@ namespace AuroraKai.SPSTools
                 // Smoothstep falloff: 0 at boundary, 1 at peak movement.
                 // Softness exponent = 1/softness: softness>1 → exponent<1 → curve pushed
                 // toward 1 → wider blend at the boundary (hides tri edges).
-                float t = Mathf.Clamp01(neighborhoodMag / peakMag);
-                float falloff = t * t * (3f - 2f * t);
+                float falloff = SmoothStep(neighborhoodMag / peakMag);
                 if (!Mathf.Approximately(falloffSoftness, 1f) && falloffSoftness > 0f)
                     falloff = Mathf.Pow(falloff, 1f / falloffSoftness);
 
@@ -920,14 +867,41 @@ namespace AuroraKai.SPSTools
         }
 
         /// <summary>
+        /// Groups of two or more vertices at the same position (see
+        /// <see cref="QuantizePosition"/>), like the copies a mesh splits along
+        /// UV seams and hard edges. With <paramref name="include"/>, only those
+        /// vertices are grouped.
+        /// </summary>
+        private static IEnumerable<List<int>> ColocatedVertexGroups(
+            Vector3[] vertices, bool[] include = null)
+        {
+            var buckets = new Dictionary<long, List<int>>();
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                if (include != null && !include[v]) continue;
+                long key = QuantizePosition(vertices[v]);
+                if (!buckets.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<int>();
+                    buckets[key] = bucket;
+                }
+                bucket.Add(v);
+            }
+
+            foreach (var bucket in buckets.Values)
+            {
+                if (bucket.Count > 1)
+                    yield return bucket;
+            }
+        }
+
+        /// <summary>
         /// Builds a vertex adjacency list from the mesh triangles.
         /// Also links co-located vertices (same position, different index)
         /// so displacement smoothing works across UV seams and hard edges.
         /// </summary>
-        internal static List<int>[] BuildAdjacency(Mesh mesh)
+        internal static List<int>[] BuildAdjacency(Vector3[] vertices, int[] triangles)
         {
-            var vertices = mesh.vertices;
-            var triangles = mesh.triangles;
             int vertCount = vertices.Length;
 
             // HashSet during build so the co-located-bucket merge (which can
@@ -946,26 +920,13 @@ namespace AuroraKai.SPSTools
             }
 
             // Link co-located vertices (same position, different index)
-            var buckets = new Dictionary<long, List<int>>();
-            for (int v = 0; v < vertCount; v++)
+            foreach (var group in ColocatedVertexGroups(vertices))
             {
-                long key = QuantizePosition(vertices[v]);
-                if (!buckets.TryGetValue(key, out var list))
-                {
-                    list = new List<int>();
-                    buckets[key] = list;
-                }
-                list.Add(v);
-            }
-
-            foreach (var bucket in buckets.Values)
-            {
-                if (bucket.Count <= 1) continue;
-                for (int i = 0; i < bucket.Count; i++)
-                    for (int j = i + 1; j < bucket.Count; j++)
+                for (int i = 0; i < group.Count; i++)
+                    for (int j = i + 1; j < group.Count; j++)
                     {
-                        sets[bucket[i]].Add(bucket[j]);
-                        sets[bucket[j]].Add(bucket[i]);
+                        sets[group[i]].Add(group[j]);
+                        sets[group[j]].Add(group[i]);
                     }
             }
 
@@ -1010,39 +971,6 @@ namespace AuroraKai.SPSTools
                     deltas[v] = sum / count;
                 }
             }
-        }
-
-        /// <summary>
-        /// Rescales all deltas so the maximum magnitude equals targetMag.
-        /// Ensures every blendshape produces the same peak displacement
-        /// regardless of how smoothing affected different positions.
-        /// </summary>
-        private static void NormalizeDeltas(Vector3[] deltas, float targetMag)
-        {
-            float maxMag = 0f;
-            for (int i = 0; i < deltas.Length; i++)
-            {
-                float m = deltas[i].magnitude;
-                if (m > maxMag) maxMag = m;
-            }
-
-            // If smoothing crushed it below 10% of target, the data is too degraded
-            // to rescale safely (would amplify noise/spikes). Warn so the user
-            // knows their blendshape will be near-invisible — likely they should
-            // reduce smoothing passes or increase displacement.
-            if (maxMag < targetMag * 0.1f)
-            {
-                Debug.LogWarning(
-                    $"[SPS Effects] Smoothing crushed blendshape peak to {maxMag:F4}m " +
-                    $"(target {targetMag:F4}m). Resulting blendshape will be near-invisible. " +
-                    "Reduce smoothing passes or increase displacement.");
-                return;
-            }
-            if (Mathf.Approximately(maxMag, targetMag)) return;
-
-            float scale = targetMag / maxMag;
-            for (int i = 0; i < deltas.Length; i++)
-                deltas[i] *= scale;
         }
 
         /// <summary>
@@ -1139,55 +1067,6 @@ namespace AuroraKai.SPSTools
             }
 
             return surfDist;
-        }
-
-        /// <summary>
-        /// Computes per-vertex weights for the entire path tube region.
-        /// </summary>
-        private static float[] ComputePathWeights(
-            Vector3[] vertices,
-            List<PathWaypoint> path,
-            Transform meshTransform, Transform avatarRoot,
-            List<int>[] adjacency,
-            Vector3[] worldRefVerts = null)
-        {
-            var weights = new float[vertices.Length];
-            int vertCount = vertices.Length;
-
-            int segments = Mathf.Max(path.Count * 8, 20);
-            var tube = CatmullRomSpline.BuildTube(path, segments);
-
-            // Euclidean distances first (for seeding)
-            var euclidDist = new float[vertCount];
-            var tubeRadius = new float[vertCount];
-            float maxRadius = 0f;
-
-            for (int v = 0; v < vertCount; v++)
-            {
-                // Use baked world positions if provided (correct for bone-parented overlays);
-                // fall back to transforming bind-pose verts via meshTransform.
-                Vector3 worldVert = worldRefVerts != null
-                    ? worldRefVerts[v]
-                    : meshTransform.TransformPoint(vertices[v]);
-                Vector3 localVert = avatarRoot.InverseTransformPoint(worldVert);
-                euclidDist[v] = tube.DistanceToTube(localVert, out tubeRadius[v]);
-                if (tubeRadius[v] > maxRadius) maxRadius = tubeRadius[v];
-            }
-
-            // Surface distances along mesh edges
-            var surfDist = ComputeSurfaceDistances(
-                vertices, adjacency, euclidDist, maxRadius);
-
-            for (int v = 0; v < vertCount; v++)
-            {
-                if (surfDist[v] < tubeRadius[v])
-                {
-                    float w = 1f - (surfDist[v] / tubeRadius[v]);
-                    weights[v] = SmoothStep(w);
-                }
-            }
-
-            return weights;
         }
 
         /// <summary>
@@ -1303,19 +1182,7 @@ namespace AuroraKai.SPSTools
             try
             {
                 if (subdivide && subdivisionPasses > 0)
-                {
-                    var preSubdivWorldRefs = GetSkinnedWorldRefVerts(overlayRenderer, mesh.vertices);
-                    var preSubdivisionMesh = mesh;
-                    mesh = MeshSubdivider.SubdivideInRegion(
-                        preSubdivisionMesh, path, overlayRenderer.transform, avatarRoot,
-                        worldRefVerts: preSubdivWorldRefs,
-                        passes: subdivisionPasses);
-                    if (preSubdivisionMesh != null && preSubdivisionMesh != mesh)
-                        Object.DestroyImmediate(preSubdivisionMesh);
-                    Undo.RecordObject(overlayRenderer, "Assign subdivided mesh");
-                    overlayRenderer.sharedMesh = mesh;
-                    PrefabUtility.RecordPrefabInstancePropertyModifications(overlayRenderer);
-                }
+                    mesh = SubdivideOnRenderer(overlayRenderer, mesh, path, avatarRoot, subdivisionPasses);
 
                 var vertices = mesh.vertices;
                 // Authored per-vert base normals for both meshes — needed so the
@@ -1351,7 +1218,7 @@ namespace AuroraKai.SPSTools
                     attached[v] = nearest >= 0 &&
                         (primaryWorldVerts[nearest] - overlayWorldVerts[v]).sqrMagnitude < matchThresholdSq;
                 }
-                var overlayAdjacency = BuildAdjacency(mesh);
+                var overlayAdjacency = BuildAdjacency(vertices, mesh.triangles);
                 var detachedFillOrder = BuildDetachedFillOrder(overlayAdjacency, attached);
 
                 var primaryTransform = primaryRenderer.transform;
@@ -1455,10 +1322,7 @@ namespace AuroraKai.SPSTools
 
                 string meshPath = $"{outputFolder}/{meshAssetName}.asset";
                 SaveMesh(mesh, meshPath);
-
-                Undo.RecordObject(overlayRenderer, "Assign generated mesh");
-                overlayRenderer.sharedMesh = mesh;
-                PrefabUtility.RecordPrefabInstancePropertyModifications(overlayRenderer);
+                AssignSharedMesh(overlayRenderer, mesh, "Assign generated mesh");
 
                 return new BlendshapeResult
                 {
@@ -1613,9 +1477,7 @@ namespace AuroraKai.SPSTools
             // AssetDatabase.CreateAsset requires the parent folder to exist.
             // Cover both generator callsites (Bulge primary / overlay) here
             // rather than repeating EnsureFolder at each call.
-            string folder = System.IO.Path.GetDirectoryName(path)?.Replace('\\', '/');
-            if (!string.IsNullOrEmpty(folder))
-                SpsAnimationUtility.EnsureFolder(folder);
+            SpsAnimationUtility.EnsureParentFolder(path);
 
             // Write to a temp path and move the old mesh aside before replacing.
             // If the final move fails, restore the old asset instead of leaving
